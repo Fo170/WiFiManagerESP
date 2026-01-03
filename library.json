@@ -1,0 +1,50 @@
+{
+  "name": "WiFiManagerESP",
+  "version": "0.5.0",
+  "description": "Bibliothèque pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32 avec support du mode point d'accès",
+  "keywords": "wifi, esp8266, esp32, access-point, ap, sta, network, iot",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Fo170/WiFiManagerESP.git"
+  },
+  "authors": [
+    {
+      "name": "Olivier FOURNET",
+      "email": "olivier.fournet@free.fr",
+      "maintainer": true
+    }
+  ],
+  "license": "GPL-3.0-only",
+  "homepage": "https://github.com/Fo170/WiFiManagerESP",
+  "frameworks": "arduino",
+  "platforms": [
+    "espressif8266",
+    "espressif32"
+  ],
+  "headers": "WiFiManagerESP.h",
+  "examples": [
+    {
+      "name": "Basic",
+      "base": "examples/Basic",
+      "files": ["Basic.cpp"]
+    },
+    {
+      "name": "UtilisationRapide",
+      "base": "examples/UtilisationRapide",
+      "files": ["UtilisationRapide.cpp"]
+    }
+  ],
+  "dependencies": {
+    "bblanchon/ArduinoJson": "^6.21.0"
+  },
+  "export": {
+    "exclude": [
+      "tests/*",
+      ".github/*",
+      "docs/*",
+      "*.md",
+      "*.txt",
+      "LICENSE"
+    ]
+  }
+}
