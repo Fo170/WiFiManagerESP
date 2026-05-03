@@ -1,8 +1,9 @@
 # WiFiManagerESP
-Bibliothèque pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32 avec support du mode point d'accès
 
-[![PlatformIO Registry](https://badges.registry.platformio.org/packages/olivierfournet/library/WiFiManagerESP.svg)](https://registry.platformio.org/libraries/olivierfournet/WiFiManagerESP)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Arduino Badge](https://img.shields.io/badge/framework-arduino-brightgreen?logo=arduino.svg)](https://www.arduino.cc/)
+[![PlatformIO](https://img.shields.io/badge/platformio-ESP8266,ESP32-violet?logo=platformio)](https://platformio.org/)
+[![Arduino Library Badge](https://www.ardu-badge.com/badge/WiFiManagerESP.svg)](https://github.com/Fo170?tab=repositories)
 
 Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32, avec support du mode point d'accès (AP).
 
@@ -24,13 +25,6 @@ Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi
 Ajoutez la dépendance dans votre fichier `platformio.ini` :
 
 ```ini
-[env:esp12e]
-platform = espressif8266
-board = esp12e
-framework = arduino
-lib_deps = 
-    https://github.com/Fo170/WiFiManagerESP@^0.5.0
-
 [env:esp32dev]
 platform = espressif32
 board = esp32dev
@@ -86,7 +80,11 @@ Consultez le dossier examples/ pour des exemples complets :
 
 Basic - Connexion WiFi simple
 
-Utilisation Rapide - Mode client + point d'accès
+AP_Only - Mode point d'accès uniquement
+
+STA_AP - Mode client + point d'accès simultané
+
+Advanced - Utilisation avancée avec événements
 
 ## 🛠️ Configuration
 Mode point d'accès (AP)
@@ -115,7 +113,7 @@ ESP8266	✅	Pleinement supporté
 Autres	❌	Non supporté
 
 ## 📄 Licence
-Ce projet est sous licence GPL-3.0. Voir le fichier LICENSE pour plus de détails.
+License: GPL v3 - voir [LICENSE](LICENSE)
 
 ## 👤 Auteur
 Olivier FOURNET
