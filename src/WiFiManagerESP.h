@@ -1,14 +1,30 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.5.0
+// v0.6.0
 // ===========================================
+
+/**
+ * @file WiFiManagerESP.h
+ * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
+ * @author Fo170
+ * @version 0.6.0
+ * 
+ * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
+ * WiFi sur les plateformes ESP8266 et ESP32, avec support du mode AP+STA,
+ * configuration automatique du hostname et gestion des événements réseau.
+ */
+
 #ifndef WIFIMANAGER_ESP_H
 #define WIFIMANAGER_ESP_H
 
 #include <Arduino.h>
 
-// Définitions de macros pour les plateformes
-#define WIFI_LIB WiFi // WiFi pour ESP8266 & ESP32
+// ===========================================
+// DÉFINITIONS DE MACROS POUR LES PLATEFORMES
+// ===========================================
+
+/** @brief Macro d'accès à la bibliothèque WiFi native */
+#define WIFI_LIB WiFi
 
 #if defined(ESP8266)
   #include <ESP8266WiFi.h>
@@ -28,74 +44,238 @@
   #error "Plateforme non supportée ! Seuls ESP8266 et ESP32 sont supportés."
 #endif
 
+// ===========================================
+// CLASSE PRINCIPALE
+// ===========================================
+
+/**
+ * @class WiFiManagerESP
+ * @brief Gestionnaire WiFi unifié pour ESP8266/ESP32
+ * 
+ * Cette classe encapsule toute la logique de gestion WiFi :
+ * - Connexion/déconnexion au réseau
+ * - Création d'un point d'accès (AP)
+ * - Configuration du hostname
+ * - Surveillance de l'état de la connexion
+ * - Gestion automatique des événements réseau (reconnexion, etc.)
+ */
 class WiFiManagerESP {
 public:
-  // Constructeur
-  WiFiManagerESP();
-  
-  // Méthodes principales
-  void begin(bool enableAP = false, uint32_t timeout = 10000);
-  void begin(const char* ssid, const char* password, bool enableAP = false, uint32_t timeout = 10000);
-  
-  // Gestion des credentials
-  void setCredentials(const char* ssid, const char* password);
-  void setAPCredentials(const char* ap_ssid, const char* ap_password = "password123");
-  
-  // Configuration hostname
-  void setHostname(const char* hostname);
-  void setHostnamePrefix(const char* prefix);
-  
-  // États et informations
-  bool isConnected();
-  int updateStatus();
-  void printStatus(bool detailed = false);
-  
-  // Gestion de la connexion
-  void reconnect();
-  void disconnect();
-  
-  // Getters réseau
-  String getLocalIP();
-  String getAPIP();
-  String getSSID();
-  int8_t getRSSI();
-  String getStatusText();
-  wl_status_t getStatus();
-  
-  // Nouveaux getters ajoutés
-  String getGatewayIP();
-  String getDnsIP();
-  String getMacAddress();
-  String getHostname();
-  
+    // ===========================================
+    // CONSTRUCTEUR
+    // ===========================================
+
+    /** @brief Constructeur par défaut */
+    WiFiManagerESP();
+
+    // ===========================================
+    // MÉTHODES PRINCIPALES
+    // ===========================================
+
+    /**
+     * @brief Démarre la connexion WiFi avec les credentials préconfigurés
+     * @param enableAP Active le mode Point d'Accès simultané (AP+STA)
+     * @param timeout Temps d'attente maximum pour la connexion (ms)
+     * 
+     * @note Nécessite d'avoir appelé setCredentials() au préalable
+     * @warning Si aucun SSID n'est configuré, affiche un message d'erreur sur Serial
+     */
+    void begin(bool enableAP = false, uint32_t timeout = 10000);
+
+    /**
+     * @brief Démarre la connexion WiFi avec des credentials spécifiques
+     * @param ssid Nom du réseau WiFi
+     * @param password Mot de passe du réseau WiFi
+     * @param enableAP Active le mode Point d'Accès simultané (AP+STA)
+     * @param timeout Temps d'attente maximum pour la connexion (ms)
+     * 
+     * @note Cette méthode enregistre automatiquement les credentials via setCredentials()
+     */
+    void begin(const char* ssid, const char* password, bool enableAP = false, uint32_t timeout = 10000);
+
+    // ===========================================
+    // GESTION DES CREDENTIALS
+    // ===========================================
+
+    /**
+     * @brief Configure les credentials du réseau WiFi à rejoindre
+     * @param ssid Nom du réseau WiFi
+     * @param password Mot de passe du réseau WiFi
+     * 
+     * @note Les pointeurs sont stockés directement, assurez-vous que les chaînes
+     *       restent valides pendant toute la durée de vie de l'objet
+     */
+    void setCredentials(const char* ssid, const char* password);
+
+    /**
+     * @brief Configure les credentials du point d'accès (AP)
+     * @param ap_ssid Nom du réseau AP à créer
+     * @param ap_password Mot de passe du réseau AP (min. 8 caractères, défaut: "password123")
+     * 
+     * @warning Un mot de passe de moins de 8 caractères entraînera la création d'un AP ouvert
+     */
+    void setAPCredentials(const char* ap_ssid, const char* ap_password = "password123");
+
+    // ===========================================
+    // CONFIGURATION HOSTNAME
+    // ===========================================
+
+    /**
+     * @brief Définit un hostname fixe pour l'appareil
+     * @param hostname Nom d'hôte souhaité
+     * 
+     * @note Si appelé après begin(), le hostname est appliqué immédiatement
+     * @note Prend priorité sur setHostnamePrefix()
+     */
+    void setHostname(const char* hostname);
+
+    /**
+     * @brief Définit un préfixe pour le hostname automatique
+     * @param prefix Préfixe du hostname (ex: "ESP_Device_")
+     * 
+     * @brief Le hostname final sera : prefix + ID unique de la puce
+     * @note Utilisé uniquement si setHostname() n'a pas été appelé
+     */
+    void setHostnamePrefix(const char* prefix);
+
+    // ===========================================
+    // ÉTATS ET INFORMATIONS
+    // ===========================================
+
+    /** @brief Vérifie si l'appareil est connecté au réseau WiFi */
+    bool isConnected();
+
+    /**
+     * @brief Met à jour et retourne l'état actuel de la connexion WiFi
+     * @return Code d'état WiFi (voir wl_status_t)
+     * 
+     * @note Détecte automatiquement les changements d'état et les affiche sur Serial
+     */
+    int updateStatus();
+
+    /**
+     * @brief Affiche l'état complet de la connexion WiFi sur Serial
+     * @param detailed Si true, affiche toutes les informations réseau (IP, MAC, RSSI, etc.)
+     */
+    void printStatus(bool detailed = false);
+
+    // ===========================================
+    // GESTION DE LA CONNEXION
+    // ===========================================
+
+    /** @brief Force une reconnexion au réseau WiFi configuré */
+    void reconnect();
+
+    /** @brief Déconnecte l'appareil du réseau WiFi */
+    void disconnect();
+
+    // ===========================================
+    // GETTERS RÉSEAU
+    // ===========================================
+
+    /** @return Adresse IP locale en mode client (STA) */
+    String getLocalIP();
+
+    /** @return Adresse IP du point d'accès (AP) */
+    String getAPIP();
+
+    /** @return SSID du réseau auquel l'appareil est connecté */
+    String getSSID();
+
+    /** @return Force du signal WiFi en dBm (négatif, plus proche de 0 = meilleur) */
+    int8_t getRSSI();
+
+    /** @return Description textuelle de l'état WiFi actuel */
+    String getStatusText();
+
+    /** @return État brut de la connexion WiFi (wl_status_t) */
+    wl_status_t getStatus();
+
+    /** @return Adresse IP de la passerelle (gateway) */
+    String getGatewayIP();
+
+    /** @return Adresse IP du serveur DNS */
+    String getDnsIP();
+
+    /** @return Adresse MAC de l'interface WiFi au format XX:XX:XX:XX:XX:XX */
+    String getMacAddress();
+
+    /** @return Hostname actuellement configuré */
+    String getHostname();
+
 private:
-  // Variables membres
-  const char* _ssid = nullptr;
-  const char* _password = nullptr;
-  const char* _ap_ssid = "ESP_WiFi_AP";
-  const char* _ap_password = "password123";
-  const char* _hostname = nullptr;
-  const char* _hostname_prefix = "ESP_Device_";
-  
-  wl_status_t _currentStatus = WL_DISCONNECTED;
-  String _currentStatusText = "";
-  unsigned long _lastWifiEvent = 0;
-  bool _wifiInitialized = false;
-  bool _apEnabled = false;
-  
-  // Méthodes privées
-  void _initWiFi(bool enableAP, uint32_t timeout);
-  void _setupCallbacks();
-  void _configureHostname();
-  String _getStatusText(wl_status_t status);
-  String _getModeText();
-  String _macToString(const uint8_t* mac);
-  
-  // Callbacks (différents selon la plateforme)
+    // ===========================================
+    // VARIABLES MEMBRES
+    // ===========================================
+    
+    const char* _ssid = nullptr;           ///< SSID du réseau WiFi cible
+    const char* _password = nullptr;       ///< Mot de passe du réseau WiFi cible
+    const char* _ap_ssid = "ESP_WiFi_AP";  ///< SSID du point d'accès créé
+    const char* _ap_password = "password123"; ///< Mot de passe du point d'accès
+    const char* _hostname = nullptr;       ///< Hostname fixe (prioritaire)
+    const char* _hostname_prefix = "ESP_Device_"; ///< Préfixe pour hostname auto
+
+    wl_status_t _currentStatus = WL_DISCONNECTED; ///< État WiFi en cache
+    String _currentStatusText = "";       ///< Description textuelle de l'état en cache
+    unsigned long _lastWifiEvent = 0;       ///< Timestamp du dernier changement d'état
+    bool _wifiInitialized = false;          ///< Indique si le WiFi a été initialisé
+    bool _apEnabled = false;                ///< Indique si le mode AP est actif
+
+    // ===========================================
+    // MÉTHODES PRIVÉES
+    // ===========================================
+
+    /**
+     * @brief Initialise le WiFi avec les paramètres configurés
+     * @param enableAP Active le mode AP+STA
+     * @param timeout Délai maximum d'attente de connexion
+     * 
+     * @note Configure les callbacks, le hostname, le mode WiFi et tente la connexion
+     */
+    void _initWiFi(bool enableAP, uint32_t timeout);
+
+    /** @brief Configure les callbacks d'événements WiFi selon la plateforme */
+    void _setupCallbacks();
+
+    /** @brief Applique la configuration du hostname à la bibliothèque WiFi native */
+    void _configureHostname();
+
+    /**
+     * @brief Convertit un code d'état WiFi en texte lisible
+     * @param status Code d'état wl_status_t
+     * @return Chaîne descriptive en français
+     */
+    String _getStatusText(wl_status_t status);
+
+    /**
+     * @brief Retourne le mode WiFi actuel en texte lisible
+     * @return Description du mode (Client, AP, Client+AP, etc.)
+     */
+    String _getModeText();
+
+    /**
+     * @brief Convertit une adresse MAC en chaîne formatée
+     * @param mac Tableau de 6 octets représentant l'adresse MAC
+     * @return Adresse MAC au format XX:XX:XX:XX:XX:XX
+     */
+    String _macToString(const uint8_t* mac);
+
+    // ===========================================
+    // CALLBACKS (spécifiques par plateforme)
+    // ===========================================
+
 #if defined(ESP8266)
-  void _setupCallbacksESP8266();
+    /** @brief Configure les callbacks WiFi spécifiques à l'ESP8266 */
+    void _setupCallbacksESP8266();
 #elif defined(ESP32)
-  void _WiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info);
+    /**
+     * @brief Gestionnaire d'événements WiFi pour ESP32
+     * @param event Type d'événement WiFi
+     * @param info Informations supplémentaires sur l'événement
+     * 
+     * @note Gère : connexion, déconnexion, attribution IP, clients AP
+     */
+    void _WiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info);
 #endif
 };
 

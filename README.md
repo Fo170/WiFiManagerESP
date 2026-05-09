@@ -30,7 +30,7 @@ platform = espressif32
 board = esp32dev
 framework = arduino
 lib_deps = 
-    https://github.com/Fo170/WiFiManagerESP@^0.5.0
+    https://github.com/Fo170/WiFiManagerESP@^0.6.0
 ```
 
 ## 📚 API Principale
@@ -133,7 +133,7 @@ Recherchez les issues existantes
 Ouvrez une nouvelle issue si nécessaire
 
 ## 📈 Versions
-v0.5.0 - Première version publique
+v0.6.0 - Ajout de la documentation Doxygen
 
 Support ESP8266 et ESP32
 
@@ -142,3 +142,5 @@ Mode AP + STA simultané
 Gestion des événements WiFi
 
 Reconnexion automatique
+
+v0.5.0 - Première version publique

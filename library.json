@@ -1,6 +1,6 @@
 {
   "name": "WiFiManagerESP",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Bibliothèque pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32 avec support du mode point d'accès",
   "keywords": "wifi, esp8266, esp32, access-point, ap, sta, network, iot",
   "repository": {
