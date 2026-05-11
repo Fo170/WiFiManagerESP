@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.7.0 - Multi-Réseaux
+// v0.7.1 - Multi-Réseaux
 // ===========================================
 
 /**
@@ -8,7 +8,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.7.0
+ * @version 0.7.1
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -500,11 +500,18 @@ private:
 WiFiManagerESP::WiFiManagerESP() {
     // Initialiser le tableau des réseaux
     for (int i = 0; i < WIFIMANAGER_MAX_NETWORKS; i++) {
-        _networks[i] = {nullptr, nullptr, 99, 0, 0, 0, false};
+        _networks[i].ssid = nullptr;
+        _networks[i].password = nullptr;
+        _networks[i].priority = 99;
+        _networks[i].failCount = 0;
+        _networks[i].lastFail = 0;
+        _networks[i].lastAttempt = 0;
+        _networks[i].configured = false;
     }
     // Initialiser l'historique
     for (int i = 0; i < WIFIMANAGER_MAX_HISTORY; i++) {
-        _history[i] = {"", "", "", "", 0, false};
+        memset(&_history[i], 0, sizeof(ConnectionHistoryEntry));
+        _history[i].used = false;
     }
 }
 
@@ -536,14 +543,19 @@ bool WiFiManagerESP::addNetwork(const char* ssid, const char* password, int prio
     // Trier par priorité
     _sortNetworksByPriority();
 
-    Serial.printf("[WiFiManagerESP] Réseau ajouté: %s (priorité=%d)
-", ssid, priority);
+    Serial.printf("[WiFiManagerESP] Réseau ajouté: %s (priorité=%d)\n", ssid, priority);
     return true;
 }
 
 void WiFiManagerESP::clearNetworks() {
     for (int i = 0; i < WIFIMANAGER_MAX_NETWORKS; i++) {
-        _networks[i] = {nullptr, nullptr, 99, 0, 0, 0, false};
+        _networks[i].ssid = nullptr;
+        _networks[i].password = nullptr;
+        _networks[i].priority = 99;
+        _networks[i].failCount = 0;
+        _networks[i].lastFail = 0;
+        _networks[i].lastAttempt = 0;
+        _networks[i].configured = false;
     }
     _networkCount = 0;
     _currentNetwork = -1;
@@ -605,39 +617,33 @@ bool WiFiManagerESP::switchToNextNetwork() {
 
 bool WiFiManagerESP::switchToNetwork(int index) {
     if (index < 0 || index >= _networkCount || !_networks[index].configured) {
-        Serial.printf("[WiFiManagerESP] Index réseau invalide: %d
-", index);
+        Serial.printf("[WiFiManagerESP] Index réseau invalide: %d\n", index);
         return false;
     }
 
-    Serial.printf("[WiFiManagerESP] Basculement vers le réseau %d: %s
-", 
+    Serial.printf("[WiFiManagerESP] Basculement vers le réseau %d: %s\n", 
                   index, _networks[index].ssid);
     return _connectToNetwork(index, 15000);
 }
 
 void WiFiManagerESP::setAutoSwitch(bool enable) {
     _autoSwitch = enable;
-    Serial.printf("[WiFiManagerESP] Basculement auto: %s
-", enable ? "ACTIVÉ" : "DÉSACTIVÉ");
+    Serial.printf("[WiFiManagerESP] Basculement auto: %s\n", enable ? "ACTIVÉ" : "DÉSACTIVÉ");
 }
 
 void WiFiManagerESP::setMaxRetries(int retries) {
     _maxRetries = max(1, retries);
-    Serial.printf("[WiFiManagerESP] Max retries: %d
-", _maxRetries);
+    Serial.printf("[WiFiManagerESP] Max retries: %d\n", _maxRetries);
 }
 
 void WiFiManagerESP::setRetryDelay(unsigned long ms) {
     _retryDelay = ms;
-    Serial.printf("[WiFiManagerESP] Retry delay: %lu ms
-", _retryDelay);
+    Serial.printf("[WiFiManagerESP] Retry delay: %lu ms\n", _retryDelay);
 }
 
 void WiFiManagerESP::setFailCooldown(unsigned long ms) {
     _failCooldown = ms;
-    Serial.printf("[WiFiManagerESP] Fail cooldown: %lu ms
-", _failCooldown);
+    Serial.printf("[WiFiManagerESP] Fail cooldown: %lu ms\n", _failCooldown);
 }
 
 // ===========================================
@@ -659,8 +665,7 @@ void WiFiManagerESP::_sortNetworksByPriority() {
 
 bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
     if (index < 0 || index >= _networkCount || !_networks[index].configured) {
-        Serial.printf("[WiFiManagerESP] ERREUR: Réseau %d invalide
-", index);
+        Serial.printf("[WiFiManagerESP] ERREUR: Réseau %d invalide\n", index);
         return false;
     }
 
@@ -669,9 +674,7 @@ bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
     _connectionStartTime = millis();
     _networks[index].lastAttempt = millis();
 
-    Serial.printf("
-[WiFiManagerESP] 📡 Connexion à [%d] %s (priorité=%d)
-", 
+    Serial.printf("\n[WiFiManagerESP] 📡 Connexion à [%d] %s (priorité=%d)\n", 
                   index, _networks[index].ssid, _networks[index].priority);
 
     // Reset complet du WiFi
@@ -690,16 +693,14 @@ bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
         Serial.print(".");
         if (++dots % 10 == 0) {
             wl_status_t st = WIFI_LIB.status();
-            Serial.printf("
-   [t=%ds] status=%d (%s)", 
+            Serial.printf("\n   [t=%ds] status=%d (%s)", 
                 dots / 2, st, _getStatusText(st).c_str());
         }
     }
     Serial.println();
 
     if (WIFI_LIB.status() == WL_CONNECTED) {
-        Serial.printf("[WiFiManagerESP] ✅ CONNECTÉ! IP=%s RSSI=%d dBm
-",
+        Serial.printf("[WiFiManagerESP] ✅ CONNECTÉ! IP=%s RSSI=%d dBm\n",
             WIFI_LIB.localIP().toString().c_str(), WIFI_LIB.RSSI());
 
         _networks[index].failCount = 0;
@@ -715,9 +716,8 @@ bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
 
     } else {
         wl_status_t finalStatus = WIFI_LIB.status();
-        Serial.printf("[WiFiManagerESP] ❌ Échec (status=%d: %s)
-", 
-                     finalStatus, _getStatusText(finalStatus).c_str());
+        Serial.printf("[WiFiManagerESP] ❌ Échec (status=%d: %s)\n", 
+                     (int)finalStatus, _getStatusText(finalStatus).c_str());
 
         _networks[index].failCount++;
         _networks[index].lastFail = millis();
@@ -780,9 +780,8 @@ void WiFiManagerESP::_addToHistory(const char* ssid, const char* status, const c
     char timeStr[20];
     snprintf(timeStr, sizeof(timeStr), "%02lu:%02lu:%02lu", h, m, s);
 
-    _history[_historyIndex] = {
-        "", "", "", "", 0, true
-    };
+    memset(&_history[_historyIndex], 0, sizeof(ConnectionHistoryEntry));
+    _history[_historyIndex].used = true;
     strncpy(_history[_historyIndex].timestamp, timeStr, sizeof(_history[_historyIndex].timestamp) - 1);
     strncpy(_history[_historyIndex].ssid, ssid, sizeof(_history[_historyIndex].ssid) - 1);
     strncpy(_history[_historyIndex].status, status, sizeof(_history[_historyIndex].status) - 1);
@@ -822,8 +821,7 @@ const ConnectionHistoryEntry* WiFiManagerESP::getHistoryEntry(int index) const {
 }
 
 void WiFiManagerESP::printHistory() const {
-    Serial.println("
-=== HISTORIQUE DES CONNEXIONS ===");
+    Serial.println("\n=== HISTORIQUE DES CONNEXIONS ===");
     if (_historyCount == 0) {
         Serial.println("(vide)");
     } else {
@@ -832,20 +830,19 @@ void WiFiManagerESP::printHistory() const {
         for (int i = 0; i < _historyCount; i++) {
             const ConnectionHistoryEntry* entry = getHistoryEntry(i);
             if (entry) {
-                Serial.printf("%-9s | %-32s | %-16s | %-15s | %4d
-",
+                Serial.printf("%-9s | %-32s | %-16s | %-15s | %4d\n",
                     entry->timestamp, entry->ssid, entry->status, 
                     entry->ip, entry->rssi);
             }
         }
     }
-    Serial.println("==================================
-");
+    Serial.println("==================================\n");
 }
 
 void WiFiManagerESP::clearHistory() {
     for (int i = 0; i < WIFIMANAGER_MAX_HISTORY; i++) {
-        _history[i] = {"", "", "", "", 0, false};
+        memset(&_history[i], 0, sizeof(ConnectionHistoryEntry));
+        _history[i].used = false;
     }
     _historyIndex = 0;
     _historyCount = 0;
@@ -1053,18 +1050,15 @@ int WiFiManagerESP::updateStatus() {
 void WiFiManagerESP::printStatus(bool detailed) {
     updateStatus();
 
-    Serial.println("
-=== ÉTAT WiFi MANAGER ===");
+    Serial.println("\n=== ÉTAT WiFi MANAGER ===");
     Serial.print("Statut: ");
     Serial.print((int)_currentStatus);
     Serial.print(" - ");
     Serial.println(_currentStatusText);
 
-    Serial.printf("Réseaux configurés: %d
-", _networkCount);
+    Serial.printf("Réseaux configurés: %d\n", _networkCount);
     if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
-        Serial.printf("Réseau actuel: [%d] %s (échecs=%d)
-",
+        Serial.printf("Réseau actuel: [%d] %s (échecs=%d)\n",
             _currentNetwork, _networks[_currentNetwork].ssid,
             _networks[_currentNetwork].failCount);
     } else {
@@ -1075,19 +1069,16 @@ void WiFiManagerESP::printStatus(bool detailed) {
         Serial.print("Mode WiFi: ");
         Serial.println(_getModeText());
 
-        Serial.println("
---- RÉSEAUX CONFIGURÉS ---");
+        Serial.println("\n--- RÉSEAUX CONFIGURÉS ---");
         for (int i = 0; i < _networkCount; i++) {
-            Serial.printf("%s [%d] %s | prio=%d | échecs=%d | dernier=%s
-",
+            Serial.printf("%s [%d] %s | prio=%d | échecs=%d | dernier=%s\n",
                 (i == _currentNetwork) ? "▶" : " ",
                 i, _networks[i].ssid, _networks[i].priority,
                 _networks[i].failCount,
                 _formatTime(millis() - _networks[i].lastFail).c_str());
         }
 
-        Serial.println("
---- MODE CLIENT (STA) ---");
+        Serial.println("\n--- MODE CLIENT (STA) ---");
         Serial.print("Connexion: ");
         Serial.println(_currentStatus == WL_CONNECTED ? "OUI" : "NON");
 
@@ -1110,8 +1101,7 @@ void WiFiManagerESP::printStatus(bool detailed) {
         }
 
         if (_apEnabled) {
-            Serial.println("
---- MODE POINT D'ACCÈS (AP) ---");
+            Serial.println("\n--- MODE POINT D'ACCÈS (AP) ---");
             Serial.print("SSID AP: ");
             Serial.println(_ap_ssid);
             Serial.print("IP AP: ");
@@ -1125,8 +1115,7 @@ void WiFiManagerESP::printStatus(bool detailed) {
 #endif
         }
 
-        Serial.println("
---- INFORMATIONS GÉNÉRALES ---");
+        Serial.println("\n--- INFORMATIONS GÉNÉRALES ---");
         Serial.print("Dernier événement: ");
         Serial.print((millis() - _lastWifiEvent) / 1000);
         Serial.println(" secondes");
@@ -1138,8 +1127,7 @@ void WiFiManagerESP::printStatus(bool detailed) {
         Serial.println(_maxRetries);
     }
 
-    Serial.println("=========================
-");
+    Serial.println("=========================\n");
 }
 
 // ===========================================

@@ -6,6 +6,7 @@
 [![Arduino Library Badge](https://www.ardu-badge.com/badge/WiFiManagerESP.svg)](https://github.com/Fo170?tab=repositories)
 
 Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32, avec support du mode point d'accès (AP) et **gestion multi-réseaux avec basculement automatique**.
+Version 0.7.1
 
 ## ✨ Fonctionnalités
 
@@ -34,7 +35,7 @@ platform = espressif32
 board = esp32dev
 framework = arduino
 lib_deps = 
-    https://github.com/Fo170/WiFiManagerESP@^0.7.0
+    https://github.com/Fo170/WiFiManagerESP@^0.7.1
 ```
 
 ## 📚 API Principale
