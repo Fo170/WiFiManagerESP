@@ -5,9 +5,10 @@ WiFiManagerESP wifiManager;
 
 void setup() {
   Serial.begin(115200);
-  
+
+  // Mode legacy: un seul réseau
   wifiManager.begin("Votre_SSID", "Votre_Mot_De_Passe");
-  
+
   if (wifiManager.isConnected()) {
     Serial.println("Connecté avec succès !");
     wifiManager.printStatus(true);
@@ -15,11 +16,8 @@ void setup() {
 }
 
 void loop() {
-  wifiManager.updateStatus();
-  delay(5000);
-  
-  if (!wifiManager.isConnected()) {
-    Serial.println("Déconnecté, tentative de reconnexion...");
-    wifiManager.reconnect();
-  }
+  // update() remplace updateStatus() + reconnexion manuelle
+  // Gère automatiquement la reconnexion si déconnexion
+  wifiManager.update();
+  delay(100);
 }
