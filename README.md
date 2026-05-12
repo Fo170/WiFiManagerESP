@@ -7,7 +7,7 @@
 
 Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32, avec support du mode point d'accès (AP) et **gestion multi-réseaux avec basculement automatique**.
 
-Version 0.7.2
+Version 0.7.3
 
 ## ✨ Fonctionnalités
 
@@ -37,7 +37,7 @@ platform = espressif32
 board = esp32dev
 framework = arduino
 lib_deps = 
-    https://github.com/Fo170/WiFiManagerESP@^0.7.2
+    https://github.com/Fo170/WiFiManagerESP@^0.7.3
 ```
 
 ## 📚 API Principale
@@ -100,7 +100,7 @@ void printStatus(bool detailed = false)
 void update()  // À appeler dans loop() pour le failover auto
 ```
 
-### mDNS (Multicast DNS) (nouveau v0.7.2)
+### mDNS (Multicast DNS) (nouveau v0.7.3)
 
 ```cpp
 void setAutoMDNS(bool enable)           // Active/désactive mDNS auto (défaut: true)
@@ -303,7 +303,7 @@ Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou un
 
 | Version | Date | Changements |
 |---------|------|-------------|
-| **v0.7.2** | 2026-05 | Ajout du support mDNS (Multicast DNS) avec services annoncés, enregistrements TXT, démarrage automatique après connexion |
+| **v0.7.3** | 2026-05 | Ajout du support mDNS (Multicast DNS) avec services annoncés, enregistrements TXT, démarrage automatique après connexion |
 | v0.7.1 | 2026-05 | Ajout du support multi-réseaux avec basculement automatique, historique des connexions, priorisation des réseaux, cooldown après échec |
 | v0.6.0 | - | Ajout de la documentation Doxygen, support ESP8266/ESP32, mode AP+STA simultané, gestion des événements WiFi, reconnexion automatique |
 | v0.5.0 | - | Première version publique |
