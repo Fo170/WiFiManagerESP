@@ -34,16 +34,7 @@
       "files": ["UtilisationRapide.cpp"]
     }
   ],
-  "dependencies": {
-    "ESP8266mDNS": {
-      "name": "ESP8266mDNS",
-      "platforms": ["espressif8266"]
-    },
-    "ESPmDNS": {
-      "name": "ESPmDNS",
-      "platforms": ["espressif32"]
-    }
-  },
+  "dependencies": {},
   "export": {
     "exclude": [
       "tests/*",
