@@ -7,6 +7,8 @@ void setup() {
   Serial.begin(115200);
 
   // Mode legacy: un seul réseau
+  // Le mDNS démarre automatiquement après connexion (setAutoMDNS true par défaut)
+  wifiManager.setHostname("mon-esp");  // Définit aussi le nom mDNS
   wifiManager.begin("Votre_SSID", "Votre_Mot_De_Passe");
 
   if (wifiManager.isConnected()) {
@@ -16,8 +18,9 @@ void setup() {
 }
 
 void loop() {
-  // update() remplace updateStatus() + reconnexion manuelle
-  // Gère automatiquement la reconnexion si déconnexion
+  // update() gère:
+  // - La reconnexion si déconnexion
+  // - MDNS.update() sur ESP8266 (nécessaire pour le responder mDNS)
   wifiManager.update();
   delay(100);
 }

@@ -1,0 +1,74 @@
+#######################################
+# Syntax Coloring Map For WiFiManagerESP
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+WiFiManagerESP	KEYWORD1
+WiFiNetwork	KEYWORD1
+ConnectionHistoryEntry	KEYWORD1
+MDNSService	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+begin	KEYWORD2
+update	KEYWORD2
+addNetwork	KEYWORD2
+clearNetworks	KEYWORD2
+getNetworkCount	KEYWORD2
+getCurrentNetworkIndex	KEYWORD2
+getNetworkSSID	KEYWORD2
+getNetworkFailCount	KEYWORD2
+switchToNextNetwork	KEYWORD2
+switchToNetwork	KEYWORD2
+setAutoSwitch	KEYWORD2
+setMaxRetries	KEYWORD2
+setRetryDelay	KEYWORD2
+setFailCooldown	KEYWORD2
+setCredentials	KEYWORD2
+setAPCredentials	KEYWORD2
+setHostname	KEYWORD2
+setHostnamePrefix	KEYWORD2
+setAutoMDNS	KEYWORD2
+startMDNS	KEYWORD2
+stopMDNS	KEYWORD2
+isMDNSRunning	KEYWORD2
+getMDNSHostname	KEYWORD2
+addMDNSService	KEYWORD2
+clearMDNSServices	KEYWORD2
+getMDNSServiceCount	KEYWORD2
+addMDNSTxtRecord	KEYWORD2
+isConnected	KEYWORD2
+updateStatus	KEYWORD2
+printStatus	KEYWORD2
+reconnect	KEYWORD2
+disconnect	KEYWORD2
+getLocalIP	KEYWORD2
+getAPIP	KEYWORD2
+getSSID	KEYWORD2
+getRSSI	KEYWORD2
+getStatusText	KEYWORD2
+getStatus	KEYWORD2
+getGatewayIP	KEYWORD2
+getDnsIP	KEYWORD2
+getMacAddress	KEYWORD2
+getHostname	KEYWORD2
+getHistoryCount	KEYWORD2
+getHistoryEntry	KEYWORD2
+printHistory	KEYWORD2
+clearHistory	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+WIFIMANAGER_MAX_NETWORKS	LITERAL1
+WIFIMANAGER_MAX_HISTORY	LITERAL1
+WIFIMANAGER_MAX_MDNS_SERVICES	LITERAL1
+WIFI_LIB	LITERAL1
+WIFI_MODE_APSTA	LITERAL1
+MDNS_UPDATE_REQUIRED	LITERAL1

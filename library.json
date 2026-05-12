@@ -1,8 +1,8 @@
 {
   "name": "WiFiManagerESP",
-  "version": "0.7.1",
-  "description": "Bibliothèque pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32 avec support du mode point d'accès",
-  "keywords": "wifi, esp8266, esp32, access-point, ap, sta, network, iot",
+  "version": "0.7.2",
+  "description": "Bibliothèque pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32 avec support du mode point d'accès (AP), multi-réseaux avec basculement automatique (failover), historique des connexions, et mDNS (Multicast DNS) avec services annoncés",
+  "keywords": "wifi, esp8266, esp32, access-point, ap, sta, network, iot, mdns, multicast-dns, failover, multi-network",
   "repository": {
     "type": "git",
     "url": "https://github.com/Fo170/WiFiManagerESP.git"
@@ -35,7 +35,14 @@
     }
   ],
   "dependencies": {
-    "bblanchon/ArduinoJson": "^6.21.0"
+    "ESP8266mDNS": {
+      "name": "ESP8266mDNS",
+      "platforms": ["espressif8266"]
+    },
+    "ESPmDNS": {
+      "name": "ESPmDNS",
+      "platforms": ["espressif32"]
+    }
   },
   "export": {
     "exclude": [

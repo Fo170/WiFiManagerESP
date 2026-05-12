@@ -7,7 +7,7 @@
 
 Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32, avec support du mode point d'accès (AP) et **gestion multi-réseaux avec basculement automatique**.
 
-Version 0.7.1
+Version 0.7.2
 
 ## ✨ Fonctionnalités
 
@@ -23,6 +23,7 @@ Version 0.7.1
 - ✅ Callbacks pour les événements WiFi
 - ✅ Timeout configurable
 - ✅ Compteur d'échecs par réseau avec cooldown
+- ✅ **mDNS (Multicast DNS) avec services annoncés**
 
 ## 📦 Installation
 
@@ -36,7 +37,7 @@ platform = espressif32
 board = esp32dev
 framework = arduino
 lib_deps = 
-    https://github.com/Fo170/WiFiManagerESP@^0.7.1
+    https://github.com/Fo170/WiFiManagerESP@^0.7.2
 ```
 
 ## 📚 API Principale
@@ -97,6 +98,20 @@ void disconnect()
 int updateStatus()
 void printStatus(bool detailed = false)
 void update()  // À appeler dans loop() pour le failover auto
+```
+
+### mDNS (Multicast DNS) (nouveau v0.7.2)
+
+```cpp
+void setAutoMDNS(bool enable)           // Active/désactive mDNS auto (défaut: true)
+bool startMDNS(const char* hostname)    // Démarre mDNS manuellement
+void stopMDNS()                         // Arrête mDNS
+bool isMDNSRunning()                    // Vérifie si mDNS est actif
+String getMDNSHostname()                // Retourne le nom mDNS
+bool addMDNSService(const char* name, const char* protocol, uint16_t port)
+void clearMDNSServices()
+int getMDNSServiceCount()
+bool addMDNSTxtRecord(const char* service, const char* protocol, const char* key, const char* value)
 ```
 
 ### Historique des connexions (nouveau)
@@ -170,6 +185,34 @@ void loop() {
 }
 ```
 
+## 🎯 Exemple mDNS (nouveau)
+
+```cpp
+#include <WiFiManagerESP.h>
+
+WiFiManagerESP wifi;
+
+void setup() {
+    Serial.begin(115200);
+
+    wifi.setHostname("mon-esp");
+    wifi.addNetwork("WiFi_Principal", "mdp1", 0);
+    wifi.addNetwork("WiFi_Secours", "mdp2", 1);
+
+    // Services mDNS à annoncer
+    wifi.addMDNSService("http", "tcp", 80);
+    wifi.addMDNSService("telnet", "tcp", 23);
+
+    wifi.begin(false, 15000);  // mDNS démarre auto après connexion
+}
+
+void loop() {
+    wifi.update();  // Gère failover + MDNS.update() sur ESP8266
+}
+```
+
+Accès via : `http://mon-esp.local`
+
 ## 🛠️ Configuration
 
 ### Mode multi-réseaux (failover)
@@ -209,6 +252,23 @@ wifiManager.setHostnamePrefix("Capteur_");
 // Résultat: Capteur_ABC123
 ```
 
+### mDNS (Multicast DNS)
+
+Le mDNS démarre automatiquement après connexion WiFi si `setAutoMDNS(true)` (défaut).
+
+```cpp
+wifi.setHostname("mon-esp");           // Définit aussi le nom mDNS
+wifi.setAutoMDNS(true);                // Active le mDNS auto (défaut)
+wifi.addMDNSService("http", "tcp", 80); // Annonce un service web
+wifi.addMDNSService("ssh", "tcp", 22);  // Annonce un service SSH
+wifi.begin(false, 15000);
+```
+
+- **ESP8266** : Nécessite `wifi.update()` dans `loop()` pour `MDNS.update()`
+- **ESP32** : mDNS géré en tâche de fond, pas besoin d'`update()`
+- Jusqu'à 5 services mDNS simultanés
+- Enregistrements TXT supportés pour enrichir les services
+
 ## 🔧 Compatibilité
 
 | Plateforme | Supporté | Notes |
@@ -243,6 +303,7 @@ Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou un
 
 | Version | Date | Changements |
 |---------|------|-------------|
-| **v0.7.1** | 2026-05 | Ajout du support multi-réseaux avec basculement automatique, historique des connexions, priorisation des réseaux, cooldown après échec |
+| **v0.7.2** | 2026-05 | Ajout du support mDNS (Multicast DNS) avec services annoncés, enregistrements TXT, démarrage automatique après connexion |
+| v0.7.1 | 2026-05 | Ajout du support multi-réseaux avec basculement automatique, historique des connexions, priorisation des réseaux, cooldown après échec |
 | v0.6.0 | - | Ajout de la documentation Doxygen, support ESP8266/ESP32, mode AP+STA simultané, gestion des événements WiFi, reconnexion automatique |
 | v0.5.0 | - | Première version publique |
