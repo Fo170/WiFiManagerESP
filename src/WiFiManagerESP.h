@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.7.1 - Multi-Réseaux
+// v0.7.2 - Multi-Réseaux + mDNS
 // ===========================================
 
 /**
@@ -8,7 +8,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.7.1
+ * @version 0.7.2
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -17,6 +17,8 @@
  * - Configuration automatique du hostname
  * - Gestion des événements réseau
  * - Historique des connexions
+ * - mDNS (Multicast DNS) avec démarrage automatique
+ * - Gestion des services mDNS
  */
 
 #ifndef WIFIMANAGER_ESP_H
@@ -33,7 +35,9 @@
 
 #if defined(ESP8266)
   #include <ESP8266WiFi.h>
+  #include <ESP8266mDNS.h>
   #define WIFI_MODE_APSTA WIFI_AP_STA
+  #define MDNS_UPDATE_REQUIRED
   #define WIFI_EVENT_STA_GOT_IP WiFiEventStationModeGotIP
   #define WIFI_EVENT_STA_DISCONNECTED WiFiEventStationModeDisconnected
   #define WIFI_EVENT_AP_STA_CONNECTED WiFiEventSoftAPModeStationConnected
@@ -42,6 +46,7 @@
 
 #if defined(ESP32)
   #include <WiFi.h>
+  #include <ESPmDNS.h>
   #define WIFI_MODE_APSTA WIFI_MODE_APSTA
 #endif
 
@@ -58,6 +63,9 @@
 
 /** @brief Nombre maximum d'entrées dans l'historique des connexions */
 #define WIFIMANAGER_MAX_HISTORY 20
+
+/** @brief Nombre maximum de services mDNS annoncés */
+#define WIFIMANAGER_MAX_MDNS_SERVICES 5
 
 // ===========================================
 // STRUCTURES DE DONNÉES
@@ -87,6 +95,15 @@ struct ConnectionHistoryEntry {
     int rssi;                   ///< Force du signal en dBm
     bool used;                  ///< true si cette entrée contient des données
 };
+/**
+ * @brief Structure représentant un service mDNS annoncé
+ */
+struct MDNSService {
+    char name[32];              ///< Nom du service (ex: "http")
+    char protocol[8];           ///< Protocole (ex: "tcp")
+    uint16_t port;              ///< Port du service
+    bool configured;            ///< true si ce slot est utilisé
+};
 
 // ===========================================
 // CLASSE PRINCIPALE
@@ -104,6 +121,8 @@ struct ConnectionHistoryEntry {
  * - Surveillance de l'état de la connexion
  * - Gestion automatique des événements réseau
  * - Historique des connexions
+ * - mDNS (Multicast DNS) avec démarrage automatique
+ * - Gestion des services mDNS
  */
 class WiFiManagerESP {
 public:
@@ -275,6 +294,57 @@ public:
     void setHostnamePrefix(const char* prefix);
 
     // ===========================================
+    // mDNS (MULTICAST DNS)
+    // ===========================================
+
+    /**
+     * @brief Active ou désactive le mDNS automatique après connexion
+     * @param enable true pour activer le mDNS auto (défaut: true)
+     */
+    void setAutoMDNS(bool enable);
+
+    /**
+     * @brief Démarre manuellement le responder mDNS
+     * @param hostname Nom mDNS souhaité (ex: "mon-esp" -> mon-esp.local)
+     * @return true si le mDNS a démarré avec succès
+     */
+    bool startMDNS(const char* hostname = nullptr);
+
+    /** @brief Arrête le responder mDNS */
+    void stopMDNS();
+
+    /** @brief Vérifie si le mDNS est actuellement actif */
+    bool isMDNSRunning() const;
+
+    /** @brief Retourne le nom mDNS actuellement utilisé */
+    String getMDNSHostname() const;
+
+    /**
+     * @brief Ajoute un service à annoncer via mDNS
+     * @param name Nom du service (ex: "http", "https", "ftp")
+     * @param protocol Protocole (ex: "tcp", "udp")
+     * @param port Port du service
+     * @return true si le service a été ajouté
+     */
+    bool addMDNSService(const char* name, const char* protocol, uint16_t port);
+
+    /** @brief Supprime tous les services mDNS configurés */
+    void clearMDNSServices();
+
+    /** @brief Retourne le nombre de services mDNS configurés */
+    int getMDNSServiceCount() const;
+
+    /**
+     * @brief Ajoute un enregistrement TXT à un service mDNS existant
+     * @param serviceName Nom du service
+     * @param protocol Protocole
+     * @param key Clé TXT
+     * @param value Valeur TXT
+     * @return true si l'enregistrement a été ajouté
+     */
+    bool addMDNSTxtRecord(const char* serviceName, const char* protocol, const char* key, const char* value);
+
+    // ===========================================
     // ÉTATS ET INFORMATIONS
     // ===========================================
 
@@ -400,6 +470,17 @@ private:
     const char* _hostname_prefix = "ESP_Device_"; ///< Préfixe pour hostname auto
 
     // ===========================================
+    // VARIABLES MEMBRES - mDNS
+    // ===========================================
+
+    bool _autoMDNS = true;                  ///< mDNS automatique activé
+    bool _mdnsRunning = false;              ///< État du responder mDNS
+    char _mdnsHostname[64];                 ///< Nom mDNS actuellement utilisé
+    MDNSService _mdnsServices[WIFIMANAGER_MAX_MDNS_SERVICES]; ///< Services mDNS configurés
+    int _mdnsServiceCount = 0;              ///< Nombre de services configurés
+    bool _mdnsPendingStart = false;         ///< Démarrage mDNS en attente de connexion
+
+    // ===========================================
     // VARIABLES MEMBRES - ÉTAT
     // ===========================================
 
@@ -458,6 +539,19 @@ private:
     String _formatTime(unsigned long ms) const;
 
     // ===========================================
+    // MÉTHODES PRIVÉES - mDNS
+    // ===========================================
+
+    /** @brief Démarre le mDNS avec le hostname configuré */
+    bool _startMDNSInternal();
+
+    /** @brief Annonce tous les services mDNS configurés */
+    void _announceMDNSServices();
+
+    /** @brief Trouve l'index d'un service mDNS par nom et protocole */
+    int _findMDNSService(const char* name, const char* protocol) const;
+
+    // ===========================================
     // MÉTHODES PRIVÉES - INITIALISATION
     // ===========================================
 
@@ -513,6 +607,12 @@ WiFiManagerESP::WiFiManagerESP() {
         memset(&_history[i], 0, sizeof(ConnectionHistoryEntry));
         _history[i].used = false;
     }
+    // Initialiser les services mDNS
+    for (int i = 0; i < WIFIMANAGER_MAX_MDNS_SERVICES; i++) {
+        memset(&_mdnsServices[i], 0, sizeof(MDNSService));
+        _mdnsServices[i].configured = false;
+    }
+    _mdnsHostname[0] = '\0';
 }
 
 // ===========================================
@@ -711,6 +811,11 @@ bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
         _addToHistory(_networks[index].ssid, "✅ Connecté", 
                      WIFI_LIB.localIP().toString().c_str(), WIFI_LIB.RSSI());
 
+        // Démarrer mDNS automatiquement si activé
+        if (_autoMDNS) {
+            _startMDNSInternal();
+        }
+
         updateStatus();
         return true;
 
@@ -803,6 +908,199 @@ String WiFiManagerESP::_formatTime(unsigned long ms) const {
     else if (min > 0) sprintf(buf, "%02lum%02lus", min, sec);
     else sprintf(buf, "%02lus", sec);
     return String(buf);
+}
+
+// ===========================================
+// IMPLÉMENTATION - mDNS
+// ===========================================
+
+void WiFiManagerESP::setAutoMDNS(bool enable) {
+    _autoMDNS = enable;
+    Serial.printf("[WiFiManagerESP] mDNS auto: %s\n", enable ? "ACTIVÉ" : "DÉSACTIVÉ");
+}
+
+bool WiFiManagerESP::startMDNS(const char* hostname) {
+    if (hostname != nullptr && strlen(hostname) > 0) {
+        strncpy(_mdnsHostname, hostname, sizeof(_mdnsHostname) - 1);
+        _mdnsHostname[sizeof(_mdnsHostname) - 1] = '\0';
+    } else if (_hostname != nullptr && strlen(_hostname) > 0) {
+        strncpy(_mdnsHostname, _hostname, sizeof(_mdnsHostname) - 1);
+        _mdnsHostname[sizeof(_mdnsHostname) - 1] = '\0';
+    } else if (_hostname_prefix != nullptr) {
+        String autoHostname;
+#if defined(ESP8266)
+        autoHostname = String(_hostname_prefix) + String(ESP.getChipId());
+#elif defined(ESP32)
+        autoHostname = String(_hostname_prefix) + String((uint32_t)(ESP.getEfuseMac() >> 32));
+#endif
+        strncpy(_mdnsHostname, autoHostname.c_str(), sizeof(_mdnsHostname) - 1);
+        _mdnsHostname[sizeof(_mdnsHostname) - 1] = '\0';
+    } else {
+        Serial.println("[WiFiManagerESP] ERREUR mDNS: Aucun hostname configuré");
+        return false;
+    }
+    return _startMDNSInternal();
+}
+
+void WiFiManagerESP::stopMDNS() {
+    if (_mdnsRunning) {
+#if defined(ESP8266)
+        MDNS.close();
+#elif defined(ESP32)
+        mdns_free();
+#endif
+        _mdnsRunning = false;
+        Serial.println("[WiFiManagerESP] mDNS arrêté");
+    }
+}
+
+bool WiFiManagerESP::isMDNSRunning() const {
+    return _mdnsRunning;
+}
+
+String WiFiManagerESP::getMDNSHostname() const {
+    if (_mdnsRunning && _mdnsHostname[0] != '\0') {
+        return String(_mdnsHostname);
+    }
+    return String("");
+}
+
+bool WiFiManagerESP::addMDNSService(const char* name, const char* protocol, uint16_t port) {
+    if (_mdnsServiceCount >= WIFIMANAGER_MAX_MDNS_SERVICES) {
+        Serial.println("[WiFiManagerESP] ERREUR: Nombre maximum de services mDNS atteint");
+        return false;
+    }
+    if (name == nullptr || strlen(name) == 0 || protocol == nullptr || strlen(protocol) == 0) {
+        Serial.println("[WiFiManagerESP] ERREUR: Nom ou protocole de service invalide");
+        return false;
+    }
+    if (port == 0) {
+        Serial.println("[WiFiManagerESP] ERREUR: Port de service invalide");
+        return false;
+    }
+    if (_findMDNSService(name, protocol) >= 0) {
+        Serial.printf("[WiFiManagerESP] Service mDNS déjà existant: %s.%s\n", name, protocol);
+        return false;
+    }
+    strncpy(_mdnsServices[_mdnsServiceCount].name, name, sizeof(_mdnsServices[_mdnsServiceCount].name) - 1);
+    strncpy(_mdnsServices[_mdnsServiceCount].protocol, protocol, sizeof(_mdnsServices[_mdnsServiceCount].protocol) - 1);
+    _mdnsServices[_mdnsServiceCount].port = port;
+    _mdnsServices[_mdnsServiceCount].configured = true;
+    _mdnsServiceCount++;
+    Serial.printf("[WiFiManagerESP] Service mDNS ajouté: %s.%s port=%d\n", name, protocol, port);
+    if (_mdnsRunning) {
+#if defined(ESP8266)
+        MDNS.addService(name, protocol, port);
+#elif defined(ESP32)
+        mdns_service_add(NULL, name, protocol, port, NULL, 0);
+#endif
+    }
+    return true;
+}
+
+void WiFiManagerESP::clearMDNSServices() {
+    for (int i = 0; i < WIFIMANAGER_MAX_MDNS_SERVICES; i++) {
+        memset(&_mdnsServices[i], 0, sizeof(MDNSService));
+        _mdnsServices[i].configured = false;
+    }
+    _mdnsServiceCount = 0;
+    Serial.println("[WiFiManagerESP] Tous les services mDNS ont été supprimés");
+}
+
+int WiFiManagerESP::getMDNSServiceCount() const {
+    return _mdnsServiceCount;
+}
+
+bool WiFiManagerESP::addMDNSTxtRecord(const char* serviceName, const char* protocol, const char* key, const char* value) {
+    if (!_mdnsRunning) {
+        Serial.println("[WiFiManagerESP] ERREUR: mDNS non démarré");
+        return false;
+    }
+    if (serviceName == nullptr || protocol == nullptr || key == nullptr) {
+        Serial.println("[WiFiManagerESP] ERREUR: Paramètres TXT invalides");
+        return false;
+    }
+    int svcIdx = _findMDNSService(serviceName, protocol);
+    if (svcIdx < 0) {
+        Serial.printf("[WiFiManagerESP] ERREUR: Service %s.%s non trouvé\n", serviceName, protocol);
+        return false;
+    }
+#if defined(ESP8266)
+    MDNS.addServiceTxt(serviceName, protocol, key, value ? value : "");
+#elif defined(ESP32)
+    mdns_service_txt_item_set(serviceName, protocol, key, value ? value : "");
+#endif
+    Serial.printf("[WiFiManagerESP] TXT record ajouté: %s.%s -> %s=%s\n", serviceName, protocol, key, value ? value : "");
+    return true;
+}
+
+bool WiFiManagerESP::_startMDNSInternal() {
+    if (_mdnsHostname[0] == '\0') {
+        if (_hostname != nullptr && strlen(_hostname) > 0) {
+            strncpy(_mdnsHostname, _hostname, sizeof(_mdnsHostname) - 1);
+            _mdnsHostname[sizeof(_mdnsHostname) - 1] = '\0';
+        } else if (_hostname_prefix != nullptr) {
+            String autoHostname;
+#if defined(ESP8266)
+            autoHostname = String(_hostname_prefix) + String(ESP.getChipId());
+#elif defined(ESP32)
+            autoHostname = String(_hostname_prefix) + String((uint32_t)(ESP.getEfuseMac() >> 32));
+#endif
+            strncpy(_mdnsHostname, autoHostname.c_str(), sizeof(_mdnsHostname) - 1);
+            _mdnsHostname[sizeof(_mdnsHostname) - 1] = '\0';
+        } else {
+            Serial.println("[WiFiManagerESP] ERREUR mDNS: Aucun hostname configuré");
+            return false;
+        }
+    }
+    if (_mdnsRunning) {
+        stopMDNS();
+    }
+#if defined(ESP8266)
+    if (!MDNS.begin(_mdnsHostname)) {
+        Serial.printf("[WiFiManagerESP] ERREUR: Échec du démarrage mDNS (ESP8266)\n");
+        _mdnsRunning = false;
+        return false;
+    }
+#elif defined(ESP32)
+    esp_err_t err = mdns_init();
+    if (err != ESP_OK) {
+        Serial.printf("[WiFiManagerESP] ERREUR: Échec de l'init mDNS (ESP32), err=%d\n", err);
+        _mdnsRunning = false;
+        return false;
+    }
+    mdns_hostname_set(_mdnsHostname);
+    mdns_instance_name_set(_mdnsHostname);
+#endif
+    _mdnsRunning = true;
+    Serial.printf("[WiFiManagerESP] ✅ mDNS démarré: %s.local\n", _mdnsHostname);
+    _announceMDNSServices();
+    return true;
+}
+
+void WiFiManagerESP::_announceMDNSServices() {
+    if (!_mdnsRunning) return;
+    for (int i = 0; i < _mdnsServiceCount; i++) {
+        if (!_mdnsServices[i].configured) continue;
+#if defined(ESP8266)
+        MDNS.addService(_mdnsServices[i].name, _mdnsServices[i].protocol, _mdnsServices[i].port);
+#elif defined(ESP32)
+        mdns_service_add(NULL, _mdnsServices[i].name, _mdnsServices[i].protocol, _mdnsServices[i].port, NULL, 0);
+#endif
+        Serial.printf("[WiFiManagerESP] mDNS service annoncé: %s.%s port=%d\n",
+                      _mdnsServices[i].name, _mdnsServices[i].protocol, _mdnsServices[i].port);
+    }
+}
+
+int WiFiManagerESP::_findMDNSService(const char* name, const char* protocol) const {
+    for (int i = 0; i < _mdnsServiceCount; i++) {
+        if (_mdnsServices[i].configured &&
+            strcmp(_mdnsServices[i].name, name) == 0 &&
+            strcmp(_mdnsServices[i].protocol, protocol) == 0) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 // ===========================================
@@ -956,6 +1254,12 @@ void WiFiManagerESP::update() {
             }
         }
     }
+    // Mettre à jour mDNS sur ESP8266 (nécessite MDNS.update() dans loop)
+#if defined(ESP8266)
+    if (_mdnsRunning) {
+        MDNS.update();
+    }
+#endif
 }
 
 // ===========================================
@@ -1114,6 +1418,25 @@ void WiFiManagerESP::printStatus(bool detailed) {
             Serial.println(WIFI_LIB.softAPgetStationNum());
 #endif
         }
+
+        // Section mDNS
+        Serial.println("\n--- mDNS ---");
+        Serial.print("mDNS actif: ");
+        Serial.println(_mdnsRunning ? "OUI" : "NON");
+        if (_mdnsRunning) {
+            Serial.print("Nom mDNS: ");
+            Serial.print(getMDNSHostname());
+            Serial.println(".local");
+            Serial.printf("Services annoncés: %d\n", _mdnsServiceCount);
+            for (int i = 0; i < _mdnsServiceCount; i++) {
+                if (_mdnsServices[i].configured) {
+                    Serial.printf("  - %s.%s port=%d\n",
+                        _mdnsServices[i].name, _mdnsServices[i].protocol, _mdnsServices[i].port);
+                }
+            }
+        }
+        Serial.print("mDNS auto: ");
+        Serial.println(_autoMDNS ? "OUI" : "NON");
 
         Serial.println("\n--- INFORMATIONS GÉNÉRALES ---");
         Serial.print("Dernier événement: ");
