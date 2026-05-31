@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.7.2 - Multi-Réseaux + mDNS
+// v0.7.4 - Multi-Réseaux + mDNS
 // ===========================================
 
 /**
@@ -8,7 +8,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.7.2
+ * @version 0.7.4
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -774,6 +774,11 @@ bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
     _connectionStartTime = millis();
     _networks[index].lastAttempt = millis();
 
+    // CORRECTION v0.7.4: Reset le failCount au début de la tentative
+    // pour éviter que le réseau soit considéré comme "trop d'échecs"
+    // pendant la connexion en cours
+    _networks[index].failCount = 0;
+
     Serial.printf("\n[WiFiManagerESP] 📡 Connexion à [%d] %s (priorité=%d)\n", 
                   index, _networks[index].ssid, _networks[index].priority);
 
@@ -835,35 +840,65 @@ bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
     }
 }
 
+// ===========================================
+// CORRECTION V0.7.4 - _findBestNetwork()
+// ===========================================
+// Ancien bug: retournait le PREMIER réseau disponible (i le plus petit)
+// au lieu du meilleur (priorité la plus basse). De plus, quand tous les
+// réseaux étaient en cooldown, la fonction retournait -1 sans fallback.
+// ===========================================
+
 int WiFiManagerESP::_findBestNetwork() {
     if (_networkCount == 0) return -1;
 
-    // Chercher le réseau avec la meilleure priorité qui n'est pas en cooldown
+    int bestNetwork = -1;
+    int bestPriority = 999;
+    unsigned long now = millis();
+
+    // Première passe : chercher le réseau avec la meilleure priorité
+    // qui n'est PAS le réseau actuel et qui n'est PAS en cooldown
     for (int i = 0; i < _networkCount; i++) {
         // Sauter le réseau actuel
         if (i == _currentNetwork) continue;
 
-        // Vérifier le cooldown
-        if (_networks[i].failCount > 0 && 
-            millis() - _networks[i].lastFail < _failCooldown) {
-            continue; // Réseau en cooldown
-        }
-
         // Réinitialiser le compteur si le cooldown est passé
-        if (millis() - _networks[i].lastFail >= _failCooldown) {
+        if (_networks[i].failCount > 0 && 
+            now - _networks[i].lastFail >= _failCooldown) {
             _networks[i].failCount = 0;
         }
 
-        return i;
+        // Vérifier si le réseau est en cooldown
+        if (_networks[i].failCount > 0 && 
+            now - _networks[i].lastFail < _failCooldown) {
+            continue; // Réseau en cooldown
+        }
+
+        // Chercher le réseau avec la meilleure priorité (la plus petite valeur)
+        if (_networks[i].priority < bestPriority) {
+            bestPriority = _networks[i].priority;
+            bestNetwork = i;
+        }
     }
 
-    // Si tous les autres sont en cooldown, réessayer le premier
-    if (_networkCount > 0) {
-        _networks[0].failCount = 0;
-        return 0;
+    // Si on a trouvé un réseau, le retourner
+    if (bestNetwork >= 0) {
+        return bestNetwork;
     }
 
-    return -1;
+    // Deuxième passe : tous les autres réseaux sont en cooldown
+    // Réinitialiser le réseau actuel et le réessayer
+    if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
+        Serial.println("[WiFiManagerESP] Tous les réseaux en cooldown, reset du réseau actuel");
+        _networks[_currentNetwork].failCount = 0;
+        return _currentNetwork;
+    }
+
+    // Dernière chance : réinitialiser TOUS les réseaux et reprendre au début
+    Serial.println("[WiFiManagerESP] Reset de tous les réseaux");
+    for (int i = 0; i < _networkCount; i++) {
+        _networks[i].failCount = 0;
+    }
+    return 0;
 }
 
 void WiFiManagerESP::_resetWiFi() {
@@ -1206,6 +1241,14 @@ void WiFiManagerESP::begin(const char* ssid, const char* password, bool enableAP
     begin(enableAP, timeout);
 }
 
+// ===========================================
+// CORRECTION V0.7.4 - update()
+// ===========================================
+// Ancien bug: quand _findBestNetwork() retournait -1 (tous en cooldown),
+// aucune action n'était entreprise, causant une boucle infinie sur le
+// réseau actuel.
+// ===========================================
+
 void WiFiManagerESP::update() {
     if (!_wifiInitialized || _networkCount == 0) return;
 
@@ -1235,12 +1278,24 @@ void WiFiManagerESP::update() {
 
                 Serial.println("[WiFiManagerESP] ⚠️ Trop d'échecs, basculement auto...");
                 int nextNetwork = _findBestNetwork();
+
+                // CORRECTION v0.7.4: Gérer tous les cas de nextNetwork
                 if (nextNetwork >= 0 && nextNetwork != _currentNetwork) {
                     _connectToNetwork(nextNetwork, 15000);
                 } else if (nextNetwork == _currentNetwork) {
                     // Réessayer le même réseau (cooldown passé)
                     _connectToNetwork(_currentNetwork, 15000);
+                } else {
+                    // nextNetwork == -1 : tous les réseaux sont en cooldown
+                    // Forcer un reset global et réessayer
+                    Serial.println("[WiFiManagerESP] Aucun réseau disponible, reset forcé");
+                    _currentNetwork = -1;
+                    for (int i = 0; i < _networkCount; i++) {
+                        _networks[i].failCount = 0;
+                    }
+                    _connectToNetwork(0, 15000);
                 }
+
             } else if (_currentNetwork >= 0) {
                 // Réessayer le même réseau
                 Serial.println("[WiFiManagerESP] 🔄 Réessai du réseau actuel...");
@@ -1250,6 +1305,13 @@ void WiFiManagerESP::update() {
                 int best = _findBestNetwork();
                 if (best >= 0) {
                     _connectToNetwork(best, 15000);
+                } else {
+                    // Aucun réseau disponible, forcer le reset
+                    Serial.println("[WiFiManagerESP] Aucun réseau, reset et réessai");
+                    for (int i = 0; i < _networkCount; i++) {
+                        _networks[i].failCount = 0;
+                    }
+                    _connectToNetwork(0, 15000);
                 }
             }
         }
