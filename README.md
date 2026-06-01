@@ -37,7 +37,7 @@ platform = espressif32
 board = esp32dev
 framework = arduino
 lib_deps = 
-    https://github.com/Fo170/WiFiManagerESP@^0.7.5
+    https://github.com/Fo170/WiFiManagerESP.git
 ```
 
 ## 📚 API Principale
