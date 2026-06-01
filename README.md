@@ -303,7 +303,8 @@ Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou un
 
 | Version |   Date  | Changements |
 |---------|---------|-------------|
-| **v0.7.4** | 2026-05	| Corrections critiques du basculement multi-réseaux : _findBestNetwork() retourne désormais le réseau avec la meilleure priorité (et non plus le premier trouvé) ; ajout d'un fallback quand tous les réseaux sont en cooldown ; _connectToNetwork() réinitialise le failCount au début de chaque tentative pour éviter les boucles infinies ; update() gère correctement le cas où _findBestNetwork() retourne -1 |
+| **v0.7.5** | 2026-06	| Refonte du basculement automatique : parcours circulaire forcé de tous les réseaux configurés pour garantir que chaque réseau est testé ; _connectToNetwork() ne réinitialise plus le failCount au début de la tentative (uniquement sur connexion réussie) ; _findBestNetwork() simplifié avec exploration systématique ; correction du hostname ESP8266 appliqué avant WiFi.mode(WIFI_STA) ; résolution du bug des pointeurs const char* vers tableaux externes |
+| v0.7.4 | 2026-05	| Corrections critiques du basculement multi-réseaux : _findBestNetwork() retourne désormais le réseau avec la meilleure priorité (et non plus le premier trouvé) ; ajout d'un fallback quand tous les réseaux sont en cooldown ; _connectToNetwork() réinitialise le failCount au début de chaque tentative pour éviter les boucles infinies ; update() gère correctement le cas où _findBestNetwork() retourne -1 |
 | v0.7.2 - v0.7.3 | 2026-05 | Ajout du support mDNS (Multicast DNS) avec services annoncés, enregistrements TXT, démarrage automatique après connexion |
 | v0.7.1 | 2026-05 | Ajout du support multi-réseaux avec basculement automatique, historique des connexions, priorisation des réseaux, cooldown après échec |
 | v0.6.0 | - | Ajout de la documentation Doxygen, support ESP8266/ESP32, mode AP+STA simultané, gestion des événements WiFi, reconnexion automatique |

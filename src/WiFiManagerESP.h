@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.7.4 - Multi-Réseaux + mDNS
+// v0.7.5 - Multi-Réseaux + mDNS
 // ===========================================
 
 /**
@@ -8,7 +8,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.7.4
+ * @version 0.7.5
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -774,11 +774,6 @@ bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
     _connectionStartTime = millis();
     _networks[index].lastAttempt = millis();
 
-    // CORRECTION v0.7.4: Reset le failCount au début de la tentative
-    // pour éviter que le réseau soit considéré comme "trop d'échecs"
-    // pendant la connexion en cours
-    _networks[index].failCount = 0;
-
     Serial.printf("\n[WiFiManagerESP] 📡 Connexion à [%d] %s (priorité=%d)\n", 
                   index, _networks[index].ssid, _networks[index].priority);
 
@@ -808,7 +803,7 @@ bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
         Serial.printf("[WiFiManagerESP] ✅ CONNECTÉ! IP=%s RSSI=%d dBm\n",
             WIFI_LIB.localIP().toString().c_str(), WIFI_LIB.RSSI());
 
-        _networks[index].failCount = 0;
+        _networks[index].failCount = 0; // ← Reset SEULEMENT ici, au succès
         _lastConnectedNetwork = index;
         _connectionInProgress = false;
         _wifiInitialized = true;
@@ -829,7 +824,7 @@ bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
         Serial.printf("[WiFiManagerESP] ❌ Échec (status=%d: %s)\n", 
                      (int)finalStatus, _getStatusText(finalStatus).c_str());
 
-        _networks[index].failCount++;
+        _networks[index].failCount++;  // Incrémenté en cas d'échec
         _networks[index].lastFail = millis();
         _connectionInProgress = false;
 
@@ -906,9 +901,9 @@ void WiFiManagerESP::_resetWiFi() {
     delay(300);
     WIFI_LIB.mode(WIFI_OFF);
     delay(200);
+    _configureHostname();
     WIFI_LIB.mode(WIFI_STA);
     delay(100);
-    _configureHostname();
 }
 
 void WiFiManagerESP::_addToHistory(const char* ssid, const char* status, const char* ip, int rssi) {
@@ -1158,12 +1153,12 @@ void WiFiManagerESP::printHistory() const {
     if (_historyCount == 0) {
         Serial.println("(vide)");
     } else {
-        Serial.println("Heure     | SSID                             | Statut           | IP              | RSSI");
-        Serial.println("----------+----------------------------------+------------------+-----------------+------");
+        Serial.println("Heure     | SSID                             | Statut         | IP              | RSSI");
+        Serial.println("----------+----------------------------------+----------------+-----------------+------");
         for (int i = 0; i < _historyCount; i++) {
             const ConnectionHistoryEntry* entry = getHistoryEntry(i);
             if (entry) {
-                Serial.printf("%-9s | %-32s | %-16s | %-15s | %4d\n",
+                Serial.printf("%-9s | %-32s | %-16s | %-15s | %4ddB\n",
                     entry->timestamp, entry->ssid, entry->status, 
                     entry->ip, entry->rssi);
             }
@@ -1252,11 +1247,9 @@ void WiFiManagerESP::begin(const char* ssid, const char* password, bool enableAP
 void WiFiManagerESP::update() {
     if (!_wifiInitialized || _networkCount == 0) return;
 
-    // Mettre à jour le statut
     wl_status_t previousStatus = _currentStatus;
     updateStatus();
 
-    // Détection de déconnexion
     if (previousStatus == WL_CONNECTED && _currentStatus != WL_CONNECTED) {
         Serial.println("[WiFiManagerESP] ⚠️ Connexion perdue détectée!");
         if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
@@ -1264,59 +1257,46 @@ void WiFiManagerESP::update() {
         }
     }
 
-    // Gestion du basculement automatique
     if (_autoSwitch && _currentStatus != WL_CONNECTED && !_connectionInProgress) {
         unsigned long now = millis();
 
-        // Vérifier le délai entre tentatives
         if (now - _lastConnectionAttempt >= _retryDelay) {
             _lastConnectionAttempt = now;
 
-            // Vérifier si le réseau actuel a trop d'échecs
-            if (_currentNetwork >= 0 && _currentNetwork < _networkCount &&
-                _networks[_currentNetwork].failCount >= _maxRetries) {
+            // NOUVEAU : Forcer le basculement circulaire si tous les réseaux ont échoué
+            static int lastTriedNetwork = -1;
+            
+            if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
+                _networks[_currentNetwork].failCount++;
+                _networks[_currentNetwork].lastFail = now;
+            }
 
-                Serial.println("[WiFiManagerESP] ⚠️ Trop d'échecs, basculement auto...");
-                int nextNetwork = _findBestNetwork();
-
-                // CORRECTION v0.7.4: Gérer tous les cas de nextNetwork
-                if (nextNetwork >= 0 && nextNetwork != _currentNetwork) {
-                    _connectToNetwork(nextNetwork, 15000);
-                } else if (nextNetwork == _currentNetwork) {
-                    // Réessayer le même réseau (cooldown passé)
-                    _connectToNetwork(_currentNetwork, 15000);
-                } else {
-                    // nextNetwork == -1 : tous les réseaux sont en cooldown
-                    // Forcer un reset global et réessayer
-                    Serial.println("[WiFiManagerESP] Aucun réseau disponible, reset forcé");
-                    _currentNetwork = -1;
-                    for (int i = 0; i < _networkCount; i++) {
-                        _networks[i].failCount = 0;
-                    }
-                    _connectToNetwork(0, 15000);
+            // Chercher le prochain réseau qui n'est pas en cooldown
+            int nextNetwork = -1;
+            for (int offset = 1; offset <= _networkCount; offset++) {
+                int candidate = (_currentNetwork + offset) % _networkCount;
+                if (_networks[candidate].failCount == 0 ||
+                    now - _networks[candidate].lastFail >= _failCooldown) {
+                    nextNetwork = candidate;
+                    break;
                 }
+            }
 
-            } else if (_currentNetwork >= 0) {
-                // Réessayer le même réseau
-                Serial.println("[WiFiManagerESP] 🔄 Réessai du réseau actuel...");
-                _connectToNetwork(_currentNetwork, 15000);
+            if (nextNetwork >= 0) {
+                _connectToNetwork(nextNetwork, 15000);
             } else {
-                // Aucun réseau actuel, tenter le meilleur
-                int best = _findBestNetwork();
-                if (best >= 0) {
-                    _connectToNetwork(best, 15000);
-                } else {
-                    // Aucun réseau disponible, forcer le reset
-                    Serial.println("[WiFiManagerESP] Aucun réseau, reset et réessai");
-                    for (int i = 0; i < _networkCount; i++) {
-                        _networks[i].failCount = 0;
-                    }
-                    _connectToNetwork(0, 15000);
+                // Tous en cooldown, reset et recommencer
+                Serial.println("[WiFiManagerESP] Tous les réseaux en cooldown, reset global");
+                for (int i = 0; i < _networkCount; i++) {
+                    _networks[i].failCount = 0;
                 }
+                // Réessayer le même réseau
+                Serial.println("[WiFiManagerESP] 🔄 Réessai d'un réseau...");
+                _connectToNetwork(0, 15000);
             }
         }
     }
-    // Mettre à jour mDNS sur ESP8266 (nécessite MDNS.update() dans loop)
+    
 #if defined(ESP8266)
     if (_mdnsRunning) {
         MDNS.update();
