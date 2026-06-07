@@ -7,7 +7,7 @@
 
 Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32, avec support du mode point d'accès (AP) et **gestion multi-réseaux avec basculement automatique**.
 
-Version 0.7.6
+Version 0.7.7
 
 ## ✨ Fonctionnalités
 
@@ -37,12 +37,12 @@ platform = espressif32
 board = esp32dev
 framework = arduino
 lib_deps = 
-    https://github.com/Fo170/WiFiManagerESP.git
+    https://github.com/Fo170/WiFiManagerESP.git@^0.7.7
 ```
 
 ## 📚 API Principale
 
-### Configuration multi-réseaux (nouveau)
+### Configuration multi-réseaux
 
 ```cpp
 bool addNetwork(const char* ssid, const char* password, int priority = 0)
@@ -100,7 +100,7 @@ void printStatus(bool detailed = false)
 void update()  // À appeler dans loop() pour le failover auto
 ```
 
-### mDNS (Multicast DNS) (nouveau v0.7.2)
+### mDNS (Multicast DNS)
 
 ```cpp
 void setAutoMDNS(bool enable)           // Active/désactive mDNS auto (défaut: true)
@@ -303,7 +303,8 @@ Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou un
 
 | Version |   Date  | Changements |
 |---------|---------|-------------|
-| **v0.7.6** | 2026-06	| la variable lastTriedNetwork est déclarée en static mais jamais utilisée. Correction pour qu'elle serve réellement à éviter de réessayer immédiatement le même réseau qui vient d'échouer  |
+| **v0.7.7** | 2026-06	| lastTriedNetwork est déclarée en static localement dans update(), mais elle n'est pas un membre de la classe. Si on veut la rendre réellement utilisable et persistante entre les appels, il faut la déclarer comme variable membre privée en _lastTriedNetwork. |
+| v0.7.6 | 2026-06	| la variable lastTriedNetwork est déclarée en static mais jamais utilisée. Correction pour qu'elle serve réellement à éviter de réessayer immédiatement le même réseau qui vient d'échouer  |
 | v0.7.5 | 2026-06	| Refonte du basculement automatique : parcours circulaire forcé de tous les réseaux configurés pour garantir que chaque réseau est testé ; _connectToNetwork() ne réinitialise plus le failCount au début de la tentative (uniquement sur connexion réussie) ; _findBestNetwork() simplifié avec exploration systématique ; correction du hostname ESP8266 appliqué avant WiFi.mode(WIFI_STA) ; résolution du bug des pointeurs const char* vers tableaux externes |
 | v0.7.4 | 2026-05	| Corrections critiques du basculement multi-réseaux : _findBestNetwork() retourne désormais le réseau avec la meilleure priorité (et non plus le premier trouvé) ; ajout d'un fallback quand tous les réseaux sont en cooldown ; _connectToNetwork() réinitialise le failCount au début de chaque tentative pour éviter les boucles infinies ; update() gère correctement le cas où _findBestNetwork() retourne -1 |
 | v0.7.2 - v0.7.3 | 2026-05 | Ajout du support mDNS (Multicast DNS) avec services annoncés, enregistrements TXT, démarrage automatique après connexion |
