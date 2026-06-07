@@ -1,6 +1,6 @@
 // ===========================================
 // Exemple d'utilisation rapide - main.cpp
-// v0.7.2 - Multi-Réseaux + mDNS
+// Multi-Réseaux + mDNS
 // ===========================================
 #include <Arduino.h>
 

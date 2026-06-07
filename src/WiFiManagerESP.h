@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.7.5 - Multi-Réseaux + mDNS
+// v0.7.6 - Multi-Réseaux + mDNS
 // ===========================================
 
 /**
@@ -8,7 +8,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.7.5
+ * @version 0.7.6
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -836,11 +836,7 @@ bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
 }
 
 // ===========================================
-// CORRECTION V0.7.4 - _findBestNetwork()
-// ===========================================
-// Ancien bug: retournait le PREMIER réseau disponible (i le plus petit)
-// au lieu du meilleur (priorité la plus basse). De plus, quand tous les
-// réseaux étaient en cooldown, la fonction retournait -1 sans fallback.
+// IMPLÉMENTATION - _findBestNetwork()
 // ===========================================
 
 int WiFiManagerESP::_findBestNetwork() {
@@ -1237,11 +1233,7 @@ void WiFiManagerESP::begin(const char* ssid, const char* password, bool enableAP
 }
 
 // ===========================================
-// CORRECTION V0.7.4 - update()
-// ===========================================
-// Ancien bug: quand _findBestNetwork() retournait -1 (tous en cooldown),
-// aucune action n'était entreprise, causant une boucle infinie sur le
-// réseau actuel.
+// IMPLÉMENTATION - update()
 // ===========================================
 
 void WiFiManagerESP::update() {
@@ -1263,18 +1255,21 @@ void WiFiManagerESP::update() {
         if (now - _lastConnectionAttempt >= _retryDelay) {
             _lastConnectionAttempt = now;
 
-            // NOUVEAU : Forcer le basculement circulaire si tous les réseaux ont échoué
-            static int lastTriedNetwork = -1;
-            
+            // Incrémenter le compteur d'échecs du réseau actuel
             if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
                 _networks[_currentNetwork].failCount++;
                 _networks[_currentNetwork].lastFail = now;
             }
 
             // Chercher le prochain réseau qui n'est pas en cooldown
+            // en évitant de réessayer celui qui vient d'échouer (lastTriedNetwork)
             int nextNetwork = -1;
             for (int offset = 1; offset <= _networkCount; offset++) {
                 int candidate = (_currentNetwork + offset) % _networkCount;
+                
+                // Éviter de réessayer immédiatement le dernier réseau essayé avec échec
+                if (candidate == lastTriedNetwork && _networkCount > 1) continue;
+                
                 if (_networks[candidate].failCount == 0 ||
                     now - _networks[candidate].lastFail >= _failCooldown) {
                     nextNetwork = candidate;
@@ -1283,6 +1278,7 @@ void WiFiManagerESP::update() {
             }
 
             if (nextNetwork >= 0) {
+                lastTriedNetwork = _currentNetwork;  // Mémoriser le réseau qu'on quitte
                 _connectToNetwork(nextNetwork, 15000);
             } else {
                 // Tous en cooldown, reset et recommencer
@@ -1290,7 +1286,7 @@ void WiFiManagerESP::update() {
                 for (int i = 0; i < _networkCount; i++) {
                     _networks[i].failCount = 0;
                 }
-                // Réessayer le même réseau
+                lastTriedNetwork = -1;  // Reset le dernier essayé
                 Serial.println("[WiFiManagerESP] 🔄 Réessai d'un réseau...");
                 _connectToNetwork(0, 15000);
             }
