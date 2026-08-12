@@ -13,6 +13,8 @@ Version 0.7.8
 
 - ✅ Support ESP8266 et ESP32
 - ✅ **Connexion WiFi multi-réseaux avec basculement automatique (failover)**
+- ✅ **Connexion non-bloquante (machine à états)** : `update()` pilote la tentative, le timeout et le failover sans jamais bloquer le `loop()`
+- ✅ **Démarrage asynchrone** : `beginAsync()` + `waitForConnection()` pour lancer et attendre sans geler le code applicatif
 - ✅ **Historique des connexions avec timestamps**
 - ✅ **Priorisation des réseaux (ordre de tentative configurable)**
 - ✅ Reconnexion automatique intelligente (pas de conflit avec multi-réseaux)
@@ -177,7 +179,7 @@ void loop() {
         wifi.printHistory();
     }
 
-    delay(100);
+    NON_BLOCKING_DELAY(100);
 }
 ```
 
@@ -197,9 +199,47 @@ void setup() {
 
 void loop() {
     wifi.update();
-    delay(100);
+    NON_BLOCKING_DELAY(100);
 }
 ```
+
+### Exemple non-bloquant (async, recommandé)
+
+```cpp
+#include <WiFiManagerESP.h>
+
+WiFiManagerESP wifi;
+
+void setup() {
+    Serial.begin(115200);
+
+    wifi.setHostname("mon-esp");
+    wifi.addNetwork("WiFi_Principal", "mdp1", 0);
+    wifi.addNetwork("WiFi_Secours", "mdp2", 1);
+
+    // Non-bloquant : lance la tentative et rend la main immédiatement.
+    // La connexion progresse dans update() (appelé dans loop()).
+    wifi.beginAsync(false, 15000);
+}
+
+void loop() {
+    wifi.update();   // Pilote la connexion + le failover, sans jamais bloquer
+
+    // Pilotage simple d'un LED (allumé si connecté)
+    digitalWrite(LED_BUILTIN, !wifi.isConnected());
+
+    NON_BLOCKING_DELAY(100);
+}
+```
+
+> **Attendre la connexion de façon bloquante (mais sans geler le WiFi)** :
+> ```cpp
+> if (wifi.waitForConnection(20000)) {
+>     // Connecté
+> } else {
+>     // Timeout : le failover continue dans loop()
+> }
+> ```
 
 ## 🎯 Exemple mDNS (nouveau)
 
@@ -319,7 +359,7 @@ Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou un
 
 | Version |   Date  | Changements |
 |---------|---------|-------------|
-| **v0.7.8** | 2026-08	| Remplacement des `delay()` bloquants par la librairie non-bloquante `NON_BLOCKING_DELAY` (vTaskDelay sur ESP32, busy-wait + yield sur ESP8266) ; dépendance déclarée dans `library.json` ; bump des exemples. Connexion refactorisée en **machine à états non-bloquante** : `begin()` conservé bloquant (compatibilité), ajout de `beginAsync()` et `waitForConnection()`, `update()` pilote la tentative et le failover sans jamais bloquer. |
+| **v0.7.8** | 2026-08	| Remplacement des `delay()` bloquants par la librairie non-bloquante `NON_BLOCKING_DELAY` (vTaskDelay sur ESP32, busy-wait + yield sur ESP8266) ; dépendance déclarée dans `library.json` ; bump des exemples. **Connexion refactorisée en machine à états non-bloquante** : `begin()` conservé bloquant (compatibilité), ajout de `beginAsync()` et `waitForConnection()`, `update()` pilote la tentative et le failover sans jamais bloquer (fin du freeze de 10-15 s), `switchToNetwork()`/`switchToNextNetwork()`/`reconnect()` retournent désormais `true` si la tentative a été lancée. **Corrections de bugs** : reconnexion automatique rétablie après perte de lien (l'état restait bloqué sur `CONNECTED` et le failover ne se déclenchait plus) ; failover immédiat sur `WL_CONNECT_FAILED` (ex. mot de passe erroné) sans attendre le timeout complet. |
 | **v0.7.7** | 2026-06	| lastTriedNetwork est déclarée en static localement dans update(), mais elle n'est pas un membre de la classe. Si on veut la rendre réellement utilisable et persistante entre les appels, il faut la déclarer comme variable membre privée en _lastTriedNetwork. |
 | v0.7.6 | 2026-06	| la variable lastTriedNetwork est déclarée en static mais jamais utilisée. Correction pour qu'elle serve réellement à éviter de réessayer immédiatement le même réseau qui vient d'échouer  |
 | v0.7.5 | 2026-06	| Refonte du basculement automatique : parcours circulaire forcé de tous les réseaux configurés pour garantir que chaque réseau est testé ; _connectToNetwork() ne réinitialise plus le failCount au début de la tentative (uniquement sur connexion réussie) ; _findBestNetwork() simplifié avec exploration systématique ; correction du hostname ESP8266 appliqué avant WiFi.mode(WIFI_STA) ; résolution du bug des pointeurs const char* vers tableaux externes |

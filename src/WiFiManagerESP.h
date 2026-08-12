@@ -859,8 +859,13 @@ bool WiFiManagerESP::_startConnection(int index, uint32_t timeout) {
 void WiFiManagerESP::_handleConnection() {
     if (_connState != ConnectionState::CONN_CONNECTING) return;
 
-    if (WIFI_LIB.status() == WL_CONNECTED) {
+    wl_status_t status = WIFI_LIB.status();
+
+    if (status == WL_CONNECTED) {
         _onConnectSuccess();
+    } else if (status == WL_CONNECT_FAILED) {
+        // Échec définitif (ex: mot de passe erroné) : basculer sans attendre le timeout
+        _onConnectFail();
     } else if (millis() - _connectionStartTime >= _connTimeout) {
         _onConnectFail();
     }
@@ -1348,10 +1353,19 @@ void WiFiManagerESP::update() {
     wl_status_t previousStatus = _currentStatus;
     updateStatus();
 
-    if (previousStatus == WL_CONNECTED && _currentStatus != WL_CONNECTED) {
+    // Détection de perte de lien : soit détectée ici (previousStatus), soit déjà
+    // rafraîchie par un callback WiFi (on compare aussi l'état machine CONNECTED).
+    bool lostLink = (previousStatus == WL_CONNECTED && _currentStatus != WL_CONNECTED) ||
+                    (_connState == ConnectionState::CONN_CONNECTED && _currentStatus != WL_CONNECTED);
+
+    if (lostLink) {
         Serial.println("[WiFiManagerESP] ⚠️ Connexion perdue détectée!");
         if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
             _addToHistory(_networks[_currentNetwork].ssid, "❌ Déconnecté", "", 0);
+        }
+        // Sortir de l'état CONNECTED pour permettre au failover de se déclencher
+        if (_connState == ConnectionState::CONN_CONNECTED) {
+            _connState = ConnectionState::CONN_IDLE;
         }
     }
 
