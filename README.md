@@ -5,7 +5,7 @@
 [![PlatformIO](https://img.shields.io/badge/platformio-ESP8266,ESP32-violet?logo=platformio)](https://platformio.org/)
 [![Arduino Library Badge](https://www.ardu-badge.com/badge/WiFiManagerESP.svg)](https://github.com/Fo170?tab=repositories)
 
-Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32, avec support du mode point d'accès (AP) et **gestion multi-réseaux avec basculement automatique**.
+Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32 : mode point d'accès (AP), **connexion non-bloquante (machine à états)**, **gestion multi-réseaux avec basculement automatique (failover)**, reconnexion automatique native du stack WiFi, historique des connexions et mDNS.
 
 Version 0.7.8
 
@@ -140,7 +140,7 @@ int getMDNSServiceCount()
 bool addMDNSTxtRecord(const char* service, const char* protocol, const char* key, const char* value)
 ```
 
-### Historique des connexions (nouveau)
+### Historique des connexions
 
 ```cpp
 int getHistoryCount()
@@ -151,7 +151,7 @@ void clearHistory()
 
 ## 🎯 Exemples
 
-### Exemple multi-réseaux (nouveau)
+### Exemple multi-réseaux
 
 ```cpp
 #include <WiFiManagerESP.h>
@@ -225,6 +225,9 @@ void setup() {
     wifi.addNetwork("WiFi_Principal", "mdp1", 0);
     wifi.addNetwork("WiFi_Secours", "mdp2", 1);
 
+    // Reconnexion native du stack WiFi (défaut activé) : absorbe les coupures brèves.
+    // wifi.setAutoReconnect(false);  // à désactiver pour un failover immédiat
+
     // Non-bloquant : lance la tentative et rend la main immédiatement.
     // La connexion progresse dans update() (appelé dans loop()).
     wifi.beginAsync(false, 15000);
@@ -249,7 +252,7 @@ void loop() {
 > }
 > ```
 
-## 🎯 Exemple mDNS (nouveau)
+## 🎯 Exemple mDNS
 
 ```cpp
 #include <WiFiManagerESP.h>
