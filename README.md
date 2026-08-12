@@ -7,7 +7,7 @@
 
 Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32, avec support du mode point d'accès (AP) et **gestion multi-réseaux avec basculement automatique**.
 
-Version 0.7.7
+Version 0.7.8
 
 ## ✨ Fonctionnalités
 
@@ -37,8 +37,13 @@ platform = espressif32
 board = esp32dev
 framework = arduino
 lib_deps = 
-    https://github.com/Fo170/WiFiManagerESP.git@^0.7.7
+    https://github.com/Fo170/WiFiManagerESP.git@^0.7.8
 ```
+
+> **Dépendance requise** : la bibliothèque `NON_BLOCKING_DELAY` est utilisée pour les délais non bloquants.
+> - **PlatformIO** : la dépendance `https://github.com/Fo170/NON_BLOCKING_DELAY.git@^1.0.0` est résolue automatiquement via `library.json`.
+> - **Arduino IDE** : installez la bibliothèque manuellement (pas dans le registre Arduino) en la clonant :
+>   `git clone https://github.com/Fo170/NON_BLOCKING_DELAY.git` dans votre dossier `libraries/`.
 
 ## 📚 API Principale
 
@@ -303,6 +308,7 @@ Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou un
 
 | Version |   Date  | Changements |
 |---------|---------|-------------|
+| **v0.7.8** | 2026-08	| Remplacement des `delay()` bloquants par la librairie non-bloquante `NON_BLOCKING_DELAY` (vTaskDelay sur ESP32, busy-wait + yield sur ESP8266) ; dépendance déclarée dans `library.json` ; bump des exemples. |
 | **v0.7.7** | 2026-06	| lastTriedNetwork est déclarée en static localement dans update(), mais elle n'est pas un membre de la classe. Si on veut la rendre réellement utilisable et persistante entre les appels, il faut la déclarer comme variable membre privée en _lastTriedNetwork. |
 | v0.7.6 | 2026-06	| la variable lastTriedNetwork est déclarée en static mais jamais utilisée. Correction pour qu'elle serve réellement à éviter de réessayer immédiatement le même réseau qui vient d'échouer  |
 | v0.7.5 | 2026-06	| Refonte du basculement automatique : parcours circulaire forcé de tous les réseaux configurés pour garantir que chaque réseau est testé ; _connectToNetwork() ne réinitialise plus le failCount au début de la tentative (uniquement sur connexion réussie) ; _findBestNetwork() simplifié avec exploration systématique ; correction du hostname ESP8266 appliqué avant WiFi.mode(WIFI_STA) ; résolution du bug des pointeurs const char* vers tableaux externes |

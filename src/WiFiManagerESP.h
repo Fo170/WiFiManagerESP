@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.7.7 - Multi-Réseaux + mDNS
+// v0.7.8 - Multi-Réseaux + mDNS
 // ===========================================
 
 /**
@@ -8,7 +8,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.7.7
+ * @version 0.7.8
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -25,6 +25,7 @@
 #define WIFIMANAGER_ESP_H
 
 #include <Arduino.h>
+#include "Delay.h"
 
 // ===========================================
 // DÉFINITIONS DE MACROS POUR LES PLATEFORMES
@@ -791,7 +792,7 @@ bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
     int dots = 0;
 
     while (WIFI_LIB.status() != WL_CONNECTED && millis() - start < timeout) {
-        delay(500);
+        NON_BLOCKING_DELAY(500);
         Serial.print(".");
         if (++dots % 10 == 0) {
             wl_status_t st = WIFI_LIB.status();
@@ -896,12 +897,12 @@ int WiFiManagerESP::_findBestNetwork() {
 
 void WiFiManagerESP::_resetWiFi() {
     WIFI_LIB.disconnect(true);
-    delay(300);
+    NON_BLOCKING_DELAY(300);
     WIFI_LIB.mode(WIFI_OFF);
-    delay(200);
+    NON_BLOCKING_DELAY(200);
     _configureHostname();
     WIFI_LIB.mode(WIFI_STA);
-    delay(100);
+    NON_BLOCKING_DELAY(100);
 }
 
 void WiFiManagerESP::_addToHistory(const char* ssid, const char* status, const char* ip, int rssi) {
@@ -1147,7 +1148,7 @@ const ConnectionHistoryEntry* WiFiManagerESP::getHistoryEntry(int index) const {
 }
 
 void WiFiManagerESP::printHistory() const {
-    Serial.println("\n=== HISTORIQUE DES CONNEXIONS ===");
+    Serial.println("\n=== 📊 HISTORIQUE DES CONNEXIONS ===");
     if (_historyCount == 0) {
         Serial.println("(vide)");
     } else {
@@ -1413,7 +1414,7 @@ void WiFiManagerESP::printStatus(bool detailed) {
         Serial.print("Mode WiFi: ");
         Serial.println(_getModeText());
 
-        Serial.println("\n--- RÉSEAUX CONFIGURÉS ---");
+        Serial.println("\n--- 📡 RÉSEAUX CONFIGURÉS ---");
         for (int i = 0; i < _networkCount; i++) {
             Serial.printf("%s [%d] %s | prio=%d | échecs=%d | dernier=%s\n",
                 (i == _currentNetwork) ? "▶" : " ",
@@ -1424,24 +1425,24 @@ void WiFiManagerESP::printStatus(bool detailed) {
 
         Serial.println("\n--- MODE CLIENT (STA) ---");
         Serial.print("Connexion: ");
-        Serial.println(_currentStatus == WL_CONNECTED ? "OUI" : "NON");
+        Serial.println(_currentStatus == WL_CONNECTED ? "OUI ✅" : "NON ❌");
 
         if (_currentStatus == WL_CONNECTED) {
-            Serial.print("IP: ");
+            Serial.print("🌐 IP: ");
             Serial.println(getLocalIP());
-            Serial.print("Gateway: ");
+            Serial.print("📡 Gateway: ");
             Serial.println(getGatewayIP());
-            Serial.print("DNS: ");
+            Serial.print("🖧 DNS: ");
             Serial.println(getDnsIP());
-            Serial.print("MAC: ");
+            Serial.print("🆔 MAC: ");
             Serial.println(getMacAddress());
             Serial.print("Hostname: ");
             Serial.println(getHostname());
-            Serial.print("RSSI: ");
-            Serial.print(getRSSI());
-            Serial.println(" dBm");
             Serial.print("SSID: ");
             Serial.println(getSSID());
+			Serial.print("RSSI: ");
+            Serial.print(getRSSI());
+            Serial.println(" dBm 📶");
         }
 
         if (_apEnabled) {
@@ -1462,7 +1463,7 @@ void WiFiManagerESP::printStatus(bool detailed) {
         // Section mDNS
         Serial.println("\n--- mDNS ---");
         Serial.print("mDNS actif: ");
-        Serial.println(_mdnsRunning ? "OUI" : "NON");
+        Serial.println(_mdnsRunning ? "OUI ✅" : "NON ❌");
         if (_mdnsRunning) {
             Serial.print("Nom mDNS: ");
             Serial.print(getMDNSHostname());
@@ -1476,16 +1477,16 @@ void WiFiManagerESP::printStatus(bool detailed) {
             }
         }
         Serial.print("mDNS auto: ");
-        Serial.println(_autoMDNS ? "OUI" : "NON");
+        Serial.println(_autoMDNS ? "OUI ✅" : "NON ❌");
 
         Serial.println("\n--- INFORMATIONS GÉNÉRALES ---");
-        Serial.print("Dernier événement: ");
+        Serial.print("📊 Dernier événement: ");
         Serial.print((millis() - _lastWifiEvent) / 1000);
         Serial.println(" secondes");
         Serial.print("Initialisé: ");
-        Serial.println(_wifiInitialized ? "OUI" : "NON");
+        Serial.println(_wifiInitialized ? "OUI ✅" : "NON ❌");
         Serial.print("Basculement auto: ");
-        Serial.println(_autoSwitch ? "OUI" : "NON");
+        Serial.println(_autoSwitch ? "OUI ✅" : "NON ❌");
         Serial.print("Max retries: ");
         Serial.println(_maxRetries);
     }

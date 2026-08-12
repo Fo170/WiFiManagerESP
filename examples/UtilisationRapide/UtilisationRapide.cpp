@@ -10,7 +10,7 @@ WiFiManagerESP wifiManager;
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  NON_BLOCKING_DELAY(1000);
 
   Serial.println("Démarrage du système...");
 
@@ -60,5 +60,5 @@ void loop() {
 
   // Votre code applicatif ici...
   // Accès mDNS: http://mon-esp.local (si mDNS actif)
-  delay(100);
+  NON_BLOCKING_DELAY(100);
 }

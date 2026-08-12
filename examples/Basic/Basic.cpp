@@ -22,5 +22,5 @@ void loop() {
   // - La reconnexion si déconnexion
   // - MDNS.update() sur ESP8266 (nécessaire pour le responder mDNS)
   wifiManager.update();
-  delay(100);
+  NON_BLOCKING_DELAY(100);
 }
