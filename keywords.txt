@@ -28,6 +28,7 @@ getNetworkFailCount	KEYWORD2
 switchToNextNetwork	KEYWORD2
 switchToNetwork	KEYWORD2
 setAutoSwitch	KEYWORD2
+setAutoReconnect	KEYWORD2
 setMaxRetries	KEYWORD2
 setRetryDelay	KEYWORD2
 setFailCooldown	KEYWORD2

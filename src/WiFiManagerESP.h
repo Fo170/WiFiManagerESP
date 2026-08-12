@@ -254,6 +254,16 @@ public:
     void setAutoSwitch(bool enable);
 
     /**
+     * @brief Configure la reconnexion automatique native du stack WiFi
+     * @param enable true pour activer (défaut: true)
+     * 
+     * @note Le stack WiFi (ESP32/ESP8266) retente lui-même le réseau courant
+     *       lors des coupures brèves. La bibliothèque ne prend le relais
+     *       (failover) que si la coupure persiste.
+     */
+    void setAutoReconnect(bool enable);
+
+    /**
      * @brief Configure le nombre maximum d'échecs avant basculement
      * @param retries Nombre d'échecs (défaut: 3)
      */
@@ -474,6 +484,7 @@ private:
     // ===========================================
 
     bool _autoSwitch = true;            ///< Basculement automatique activé
+    bool _autoReconnect = true;         ///< Reconnexion automatique native du stack WiFi
     int _maxRetries = 3;                ///< Échecs avant basculement
     unsigned long _retryDelay = 10000;  ///< Délai entre tentatives (ms)
     unsigned long _failCooldown = 60000; ///< Délai avant réessai après échec (ms)
@@ -790,6 +801,12 @@ bool WiFiManagerESP::switchToNetwork(int index) {
 void WiFiManagerESP::setAutoSwitch(bool enable) {
     _autoSwitch = enable;
     Serial.printf("[WiFiManagerESP] Basculement auto: %s\n", enable ? "ACTIVÉ" : "DÉSACTIVÉ");
+}
+
+void WiFiManagerESP::setAutoReconnect(bool enable) {
+    _autoReconnect = enable;
+    WIFI_LIB.setAutoReconnect(_autoReconnect);
+    Serial.printf("[WiFiManagerESP] Reconnexion auto WiFi: %s\n", enable ? "ACTIVÉE" : "DÉSACTIVÉE");
 }
 
 void WiFiManagerESP::setMaxRetries(int retries) {
@@ -1261,6 +1278,9 @@ bool WiFiManagerESP::_beginInternal(bool enableAP, uint32_t timeout) {
 
     _apEnabled = enableAP;
     _setupCallbacks();
+
+    // Reconnexion automatique native du stack WiFi (à régler avant WiFi.begin())
+    WIFI_LIB.setAutoReconnect(_autoReconnect);
 
     // Configurer le hostname
     _configureHostname();

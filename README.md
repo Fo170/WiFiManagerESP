@@ -18,6 +18,7 @@ Version 0.7.8
 - ✅ **Historique des connexions avec timestamps**
 - ✅ **Priorisation des réseaux (ordre de tentative configurable)**
 - ✅ Reconnexion automatique intelligente (pas de conflit avec multi-réseaux)
+- ✅ **Reconnexion automatique native du stack WiFi** (`setAutoReconnect`) pour absorber les coupures brèves
 - ✅ Mode point d'accès (AP) simultané
 - ✅ Gestion des événements WiFi
 - ✅ Hostname personnalisable
@@ -66,10 +67,17 @@ bool switchToNetwork(int index)
 
 ```cpp
 void setAutoSwitch(bool enable)
+void setAutoReconnect(bool enable)   // Reconnexion native du stack WiFi (défaut: true)
 void setMaxRetries(int retries)
 void setRetryDelay(unsigned long ms)
 void setFailCooldown(unsigned long ms)
 ```
+
+> **Reconnexion automatique native** : `setAutoReconnect(true)` (défaut) laisse le stack WiFi
+> (ESP32/ESP8266) retenter lui-même le réseau courant lors des coupures brèves. La bibliothèque
+> ne prend le relais (failover) que si la coupure persiste au-delà de ce que le stack peut résorber.
+> Désactivable via `setAutoReconnect(false)` si vous préférez que le failover agisse dès la première
+> détection de perte de lien.
 
 ### Configuration (legacy mono-réseau)
 
@@ -359,7 +367,7 @@ Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou un
 
 | Version |   Date  | Changements |
 |---------|---------|-------------|
-| **v0.7.8** | 2026-08	| Remplacement des `delay()` bloquants par la librairie non-bloquante `NON_BLOCKING_DELAY` (vTaskDelay sur ESP32, busy-wait + yield sur ESP8266) ; dépendance déclarée dans `library.json` ; bump des exemples. **Connexion refactorisée en machine à états non-bloquante** : `begin()` conservé bloquant (compatibilité), ajout de `beginAsync()` et `waitForConnection()`, `update()` pilote la tentative et le failover sans jamais bloquer (fin du freeze de 10-15 s), `switchToNetwork()`/`switchToNextNetwork()`/`reconnect()` retournent désormais `true` si la tentative a été lancée. **Corrections de bugs** : reconnexion automatique rétablie après perte de lien (l'état restait bloqué sur `CONNECTED` et le failover ne se déclenchait plus) ; failover immédiat sur `WL_CONNECT_FAILED` (ex. mot de passe erroné) sans attendre le timeout complet. |
+| **v0.7.8** | 2026-08	| Remplacement des `delay()` bloquants par la librairie non-bloquante `NON_BLOCKING_DELAY` (vTaskDelay sur ESP32, busy-wait + yield sur ESP8266) ; dépendance déclarée dans `library.json` ; bump des exemples. **Connexion refactorisée en machine à états non-bloquante** : `begin()` conservé bloquant (compatibilité), ajout de `beginAsync()` et `waitForConnection()`, `update()` pilote la tentative et le failover sans jamais bloquer (fin du freeze de 10-15 s), `switchToNetwork()`/`switchToNextNetwork()`/`reconnect()` retournent désormais `true` si la tentative a été lancée. **Corrections de bugs** : reconnexion automatique rétablie après perte de lien (l'état restait bloqué sur `CONNECTED` et le failover ne se déclenchait plus) ; failover immédiat sur `WL_CONNECT_FAILED` (ex. mot de passe erroné) sans attendre le timeout complet. Ajout de `setAutoReconnect()` (défaut activé) : le stack WiFi retente lui-même le réseau courant sur coupures brèves, la bibliothèque ne fail-over que si la coupure persiste. |
 | **v0.7.7** | 2026-06	| lastTriedNetwork est déclarée en static localement dans update(), mais elle n'est pas un membre de la classe. Si on veut la rendre réellement utilisable et persistante entre les appels, il faut la déclarer comme variable membre privée en _lastTriedNetwork. |
 | v0.7.6 | 2026-06	| la variable lastTriedNetwork est déclarée en static mais jamais utilisée. Correction pour qu'elle serve réellement à éviter de réessayer immédiatement le même réseau qui vient d'échouer  |
 | v0.7.5 | 2026-06	| Refonte du basculement automatique : parcours circulaire forcé de tous les réseaux configurés pour garantir que chaque réseau est testé ; _connectToNetwork() ne réinitialise plus le failCount au début de la tentative (uniquement sur connexion réussie) ; _findBestNetwork() simplifié avec exploration systématique ; correction du hostname ESP8266 appliqué avant WiFi.mode(WIFI_STA) ; résolution du bug des pointeurs const char* vers tableaux externes |
