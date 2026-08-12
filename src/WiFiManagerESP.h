@@ -141,9 +141,11 @@ public:
     /**
      * @brief Démarre la connexion WiFi avec les réseaux configurés
      * @param enableAP Active le mode Point d'Accès simultané (AP+STA)
-     * @param timeout Temps d'attente maximum par réseau (ms)
+     * @param timeout Temps d'attente maximum par tentative (ms)
      * 
      * @note Tente de se connecter au réseau avec la meilleure priorité
+     * @note Bloquante (compatibilité) : attend la fin de la première tentative
+     *       (succès ou échec) ou le timeout. Pour du non-bloquant, voir beginAsync().
      * @warning Nécessite d'avoir appelé addNetwork() au préalable
      */
     void begin(bool enableAP = false, uint32_t timeout = 10000);
@@ -158,6 +160,26 @@ public:
      * @note Cette méthode ajoute automatiquement le réseau et appelle begin()
      */
     void begin(const char* ssid, const char* password, bool enableAP = false, uint32_t timeout = 10000);
+
+    /**
+     * @brief Démarre la connexion WiFi sans bloquer (machine à états)
+     * @param enableAP Active le mode Point d'Accès simultané (AP+STA)
+     * @param timeout Temps d'attente maximum par tentative (ms)
+     * @return true si une tentative de connexion a été lancée
+     * 
+     * @note La connexion progresse dans update() (à appeler dans loop()).
+     * @note Vérifier l'état avec isConnected() ; attendre avec waitForConnection().
+     */
+    bool beginAsync(bool enableAP = false, uint32_t timeout = 10000);
+
+    /**
+     * @brief Attend (sans bloquer le WiFi) jusqu'à connexion ou timeout
+     * @param timeoutMs Durée maximum d'attente (ms)
+     * @return true si connecté, false si timeout expiré
+     * 
+     * @note Boucle sur update() avec délai non bloquant.
+     */
+    bool waitForConnection(uint32_t timeoutMs);
 
     /**
      * @brief Met à jour la gestion WiFi - à appeler dans loop()
@@ -486,11 +508,29 @@ private:
     // VARIABLES MEMBRES - ÉTAT
     // ===========================================
 
+    /**
+     * @brief Machine à états de la connexion (état toujours défini)
+     *
+     * CONN_IDLE       : aucune tentative en cours (repos)
+     * CONN_CONNECTING : WIFI_LIB.begin() lancé, attente de WL_CONNECTED
+     * CONN_CONNECTED  : connecté (état stable)
+     * CONN_FAILED     : tentative terminée en échec (retour IDLE au prochain update)
+     */
+    enum class ConnectionState : uint8_t {
+        CONN_IDLE,
+        CONN_CONNECTING,
+        CONN_CONNECTED,
+        CONN_FAILED
+    };
+
+    ConnectionState _connState = ConnectionState::CONN_IDLE; ///< État de la machine à états
+    int _connTargetIndex = -1;        ///< Index du réseau de la tentative en cours
+    uint32_t _connTimeout = 10000;    ///< Timeout de la tentative en cours (ms)
+
     wl_status_t _currentStatus = WL_DISCONNECTED;   ///< État WiFi en cache
     String _currentStatusText = "";                 ///< Description textuelle de l'état
     unsigned long _lastWifiEvent = 0;               ///< Timestamp du dernier changement d'état
     bool _wifiInitialized = false;                  ///< WiFi initialisé
-    bool _connectionInProgress = false;             ///< Connexion en cours
     unsigned long _lastConnectionAttempt = 0;       ///< Timestamp dernière tentative
     unsigned long _connectionStartTime = 0;         ///< Timestamp début connexion actuelle
 
@@ -512,12 +552,29 @@ private:
     void _sortNetworksByPriority();
 
     /**
-     * @brief Tente de se connecter à un réseau spécifique
+     * @brief Lance une tentative de connexion asynchrone vers un réseau
      * @param index Index du réseau dans le tableau
-     * @param timeout Délai maximum d'attente (ms)
-     * @return true si connecté, false sinon
+     * @param timeout Délai maximum de la tentative (ms)
+     * @return true si la tentative a été lancée, false si index invalide ou déjà en cours
+     * 
+     * @note Non bloquant : la progression se fait dans update() via _handleConnection().
      */
-    bool _connectToNetwork(int index, uint32_t timeout);
+    bool _startConnection(int index, uint32_t timeout);
+
+    /**
+     * @brief Pilote la machine à états de connexion (appelée par update())
+     */
+    void _handleConnection();
+
+    /**
+     * @brief Finalise une connexion réussie (reset failCount, historique, mDNS)
+     */
+    void _onConnectSuccess();
+
+    /**
+     * @brief Finalise une tentative en échec (failCount++, historique, failover)
+     */
+    void _onConnectFail();
 
     /**
      * @brief Trouve le meilleur réseau à tenter (priorité + cooldown)
@@ -558,11 +615,12 @@ private:
     // ===========================================
 
     /**
-     * @brief Initialise le WiFi avec les paramètres configurés
+     * @brief Initialise le WiFi (AP + hostname) et lance la première tentative
      * @param enableAP Active le mode AP+STA
-     * @param timeout Délai maximum d'attente de connexion
+     * @param timeout Délai maximum de la tentative de connexion
+     * @return true si une tentative a été lancée
      */
-    void _initWiFi(bool enableAP, uint32_t timeout);
+    bool _beginInternal(bool enableAP, uint32_t timeout);
 
     /** @brief Configure les callbacks d'événements WiFi selon la plateforme */
     void _setupCallbacks();
@@ -705,14 +763,14 @@ bool WiFiManagerESP::switchToNextNetwork() {
     // Trouver et connecter au meilleur réseau suivant
     int nextNetwork = _findBestNetwork();
     if (nextNetwork >= 0) {
-        return _connectToNetwork(nextNetwork, 15000);
+        return _startConnection(nextNetwork, 15000);
     }
 
     // Si aucun réseau n'est disponible, réessayer le premier
     if (_networkCount > 0) {
         Serial.println("[WiFiManagerESP] Tous les réseaux en cooldown, réessai du premier");
         _networks[0].failCount = 0; // Reset le compteur
-        return _connectToNetwork(0, 15000);
+        return _startConnection(0, 15000);
     }
 
     return false;
@@ -726,7 +784,7 @@ bool WiFiManagerESP::switchToNetwork(int index) {
 
     Serial.printf("[WiFiManagerESP] Basculement vers le réseau %d: %s\n", 
                   index, _networks[index].ssid);
-    return _connectToNetwork(index, 15000);
+    return _startConnection(index, 15000);
 }
 
 void WiFiManagerESP::setAutoSwitch(bool enable) {
@@ -766,76 +824,86 @@ void WiFiManagerESP::_sortNetworksByPriority() {
     }
 }
 
-bool WiFiManagerESP::_connectToNetwork(int index, uint32_t timeout) {
+bool WiFiManagerESP::_startConnection(int index, uint32_t timeout) {
+    if (_connState == ConnectionState::CONN_CONNECTING) {
+        Serial.println("[WiFiManagerESP] Connexion déjà en cours, tentative ignorée");
+        return false;
+    }
     if (index < 0 || index >= _networkCount || !_networks[index].configured) {
         Serial.printf("[WiFiManagerESP] ERREUR: Réseau %d invalide\n", index);
         return false;
     }
 
     _currentNetwork = index;
-    _connectionInProgress = true;
+    _connTargetIndex = index;
+    _connTimeout = timeout;
+    _connState = ConnectionState::CONN_CONNECTING;
     _connectionStartTime = millis();
+    _lastConnectionAttempt = millis();
     _networks[index].lastAttempt = millis();
 
     Serial.printf("\n[WiFiManagerESP] 📡 Connexion à [%d] %s (priorité=%d)\n", 
                   index, _networks[index].ssid, _networks[index].priority);
 
-    // Reset complet du WiFi
+    // Reset complet du WiFi (courte séquence bloquante ~600ms)
     _resetWiFi();
 
-    // Démarrer la connexion
+    // Démarrer la connexion (fire-and-forget : la progression est suivie par update())
     WIFI_LIB.begin(_networks[index].ssid, _networks[index].password);
 
-    // Attendre avec timeout et affichage du statut
-    Serial.print("[WiFiManagerESP] ⏳ Attente");
-    unsigned long start = millis();
-    int dots = 0;
+    Serial.println("[WiFiManagerESP] ⏳ Connexion lancée (suivie par update())");
 
-    while (WIFI_LIB.status() != WL_CONNECTED && millis() - start < timeout) {
-        NON_BLOCKING_DELAY(500);
-        Serial.print(".");
-        if (++dots % 10 == 0) {
-            wl_status_t st = WIFI_LIB.status();
-            Serial.printf("\n   [t=%ds] status=%d (%s)", 
-                dots / 2, st, _getStatusText(st).c_str());
-        }
-    }
-    Serial.println();
+    return true;
+}
+
+void WiFiManagerESP::_handleConnection() {
+    if (_connState != ConnectionState::CONN_CONNECTING) return;
 
     if (WIFI_LIB.status() == WL_CONNECTED) {
-        Serial.printf("[WiFiManagerESP] ✅ CONNECTÉ! IP=%s RSSI=%d dBm\n",
-            WIFI_LIB.localIP().toString().c_str(), WIFI_LIB.RSSI());
-
-        _networks[index].failCount = 0; // ← Reset SEULEMENT ici, au succès
-        _lastConnectedNetwork = index;
-        _connectionInProgress = false;
-        _wifiInitialized = true;
-
-        _addToHistory(_networks[index].ssid, "✅ Connecté", 
-                     WIFI_LIB.localIP().toString().c_str(), WIFI_LIB.RSSI());
-
-        // Démarrer mDNS automatiquement si activé
-        if (_autoMDNS) {
-            _startMDNSInternal();
-        }
-
-        updateStatus();
-        return true;
-
-    } else {
-        wl_status_t finalStatus = WIFI_LIB.status();
-        Serial.printf("[WiFiManagerESP] ❌ Échec (status=%d: %s)\n", 
-                     (int)finalStatus, _getStatusText(finalStatus).c_str());
-
-        _networks[index].failCount++;  // Incrémenté en cas d'échec
-        _networks[index].lastFail = millis();
-        _connectionInProgress = false;
-
-        _addToHistory(_networks[index].ssid, "❌ Échec", "", 0);
-
-        updateStatus();
-        return false;
+        _onConnectSuccess();
+    } else if (millis() - _connectionStartTime >= _connTimeout) {
+        _onConnectFail();
     }
+}
+
+void WiFiManagerESP::_onConnectSuccess() {
+    int index = _connTargetIndex;
+    _connState = ConnectionState::CONN_CONNECTED;
+
+    Serial.printf("[WiFiManagerESP] ✅ CONNECTÉ! IP=%s RSSI=%d dBm\n",
+        WIFI_LIB.localIP().toString().c_str(), WIFI_LIB.RSSI());
+
+    _networks[index].failCount = 0; // ← Reset SEULEMENT au succès
+    _lastConnectedNetwork = index;
+    _wifiInitialized = true;
+
+    _addToHistory(_networks[index].ssid, "✅ Connecté", 
+                 WIFI_LIB.localIP().toString().c_str(), WIFI_LIB.RSSI());
+
+    // Démarrer mDNS automatiquement si activé
+    if (_autoMDNS) {
+        _startMDNSInternal();
+    }
+
+    updateStatus();
+}
+
+void WiFiManagerESP::_onConnectFail() {
+    int index = _connTargetIndex;
+    wl_status_t finalStatus = WIFI_LIB.status();
+
+    Serial.printf("[WiFiManagerESP] ❌ Échec (status=%d: %s)\n", 
+                 (int)finalStatus, _getStatusText(finalStatus).c_str());
+
+    _networks[index].failCount++;  // Incrémenté en cas d'échec
+    _networks[index].lastFail = millis();
+
+    _addToHistory(_networks[index].ssid, "❌ Échec", "", 0);
+
+    updateStatus();
+
+    // Laisse update() déclencher le failover au prochain passage (état IDLE)
+    _connState = ConnectionState::CONN_FAILED;
 }
 
 // ===========================================
@@ -1180,10 +1248,10 @@ void WiFiManagerESP::clearHistory() {
 // IMPLÉMENTATION - MÉTHODES PRINCIPALES
 // ===========================================
 
-void WiFiManagerESP::begin(bool enableAP, uint32_t timeout) {
+bool WiFiManagerESP::_beginInternal(bool enableAP, uint32_t timeout) {
     if (_networkCount == 0) {
         Serial.println("[WiFiManagerESP] ERREUR: Aucun réseau configuré. Utilisez addNetwork() d'abord.");
-        return;
+        return false;
     }
 
     _apEnabled = enableAP;
@@ -1220,13 +1288,48 @@ void WiFiManagerESP::begin(bool enableAP, uint32_t timeout) {
 
     _wifiInitialized = true;
 
-    // Tenter de se connecter au meilleur réseau
+    // Tenter de se connecter au meilleur réseau (asynchrone)
     int bestNetwork = _findBestNetwork();
-    if (bestNetwork >= 0) {
-        _connectToNetwork(bestNetwork, timeout);
+    if (bestNetwork < 0) {
+        _connState = ConnectionState::CONN_IDLE;
+        updateStatus();
+        return false;
     }
 
     updateStatus();
+    return _startConnection(bestNetwork, timeout);
+}
+
+void WiFiManagerESP::begin(bool enableAP, uint32_t timeout) {
+    if (!_beginInternal(enableAP, timeout)) return;
+
+    // Attente bloquante (compatibilité) : pilote la tentative en cours
+    // jusqu'à son terme (succès ou échec) ou le timeout, sans failover.
+    unsigned long start = millis();
+    while (millis() - start < timeout &&
+           _connState == ConnectionState::CONN_CONNECTING) {
+        _handleConnection();
+#if defined(ESP8266)
+        if (_mdnsRunning) {
+            MDNS.update();
+        }
+#endif
+        NON_BLOCKING_DELAY(50);
+    }
+}
+
+bool WiFiManagerESP::beginAsync(bool enableAP, uint32_t timeout) {
+    return _beginInternal(enableAP, timeout);
+}
+
+bool WiFiManagerESP::waitForConnection(uint32_t timeoutMs) {
+    unsigned long start = millis();
+    while (millis() - start < timeoutMs) {
+        update();
+        if (isConnected()) return true;
+        NON_BLOCKING_DELAY(50);
+    }
+    return isConnected();
 }
 
 void WiFiManagerESP::begin(const char* ssid, const char* password, bool enableAP, uint32_t timeout) {
@@ -1252,7 +1355,15 @@ void WiFiManagerESP::update() {
         }
     }
 
-    if (_autoSwitch && _currentStatus != WL_CONNECTED && !_connectionInProgress) {
+    // Piloter la tentative de connexion en cours (machine à états)
+    _handleConnection();
+
+    // Après un échec, repasser en repos pour laisser le failover décider
+    if (_connState == ConnectionState::CONN_FAILED) {
+        _connState = ConnectionState::CONN_IDLE;
+    }
+
+    if (_autoSwitch && _currentStatus != WL_CONNECTED && _connState == ConnectionState::CONN_IDLE) {
         unsigned long now = millis();
 
         if (now - _lastConnectionAttempt >= _retryDelay) {
@@ -1282,7 +1393,7 @@ void WiFiManagerESP::update() {
 
             if (nextNetwork >= 0) {
                 _lastTriedNetwork = _currentNetwork;  // Mémoriser le réseau qu'on quitte
-                _connectToNetwork(nextNetwork, 15000);
+                _startConnection(nextNetwork, 15000);
             } else {
                 // Tous en cooldown, reset et recommencer
                 Serial.println("[WiFiManagerESP] Tous les réseaux en cooldown, reset global");
@@ -1291,7 +1402,7 @@ void WiFiManagerESP::update() {
                 }
                 _lastTriedNetwork = -1;  // Reset le dernier essayé
                 Serial.println("[WiFiManagerESP] 🔄 Réessai d'un réseau...");
-                _connectToNetwork(0, 15000);
+                _startConnection(0, 15000);
             }
         }
     }
@@ -1501,10 +1612,10 @@ void WiFiManagerESP::printStatus(bool detailed) {
 void WiFiManagerESP::reconnect() {
     if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
         Serial.println("[WiFiManagerESP] Reconnexion au réseau actuel...");
-        _connectToNetwork(_currentNetwork, 15000);
+        _startConnection(_currentNetwork, 15000);
     } else if (_networkCount > 0) {
         Serial.println("[WiFiManagerESP] Reconnexion au premier réseau...");
-        _connectToNetwork(0, 15000);
+        _startConnection(0, 15000);
     } else {
         Serial.println("[WiFiManagerESP] ERREUR: Aucun réseau configuré");
     }
@@ -1513,6 +1624,7 @@ void WiFiManagerESP::reconnect() {
 void WiFiManagerESP::disconnect() {
     WIFI_LIB.disconnect();
     _currentNetwork = -1;
+    _connState = ConnectionState::CONN_IDLE;
     updateStatus();
 }
 

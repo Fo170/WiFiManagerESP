@@ -98,12 +98,23 @@ wl_status_t getStatus()
 ### Gestion de la connexion
 
 ```cpp
+bool beginAsync(bool enableAP = false, uint32_t timeout = 10000)  // Non-bloquant : lance la tentative, update() la suit
+bool waitForConnection(uint32_t timeoutMs)                        // Attend (sans bloquer le WiFi) la connexion
 void reconnect()
 void disconnect()
 int updateStatus()
 void printStatus(bool detailed = false)
 void update()  // À appeler dans loop() pour le failover auto
 ```
+
+> **Connexion non-bloquante (machine à états)** : `begin()` reste bloquant (compatibilité)
+> mais s'appuie sur la même machine à états que `beginAsync()` — aucune tentative ne bloque plus
+> `update()`. L'état est piloté par `update()` (à appeler dans `loop()`).
+> `isConnected()` retourne `true` quand le lien WiFi est actif (pilotage LED, etc.).
+
+> **Sémantique de retour (async)** : `switchToNetwork()`, `switchToNextNetwork()` et `reconnect()`
+> retournent `true` si la **tentative a été lancée** (non-bloquant). Le résultat réel s'observe
+> via `isConnected()` / `update()`.
 
 ### mDNS (Multicast DNS)
 
@@ -308,7 +319,7 @@ Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou un
 
 | Version |   Date  | Changements |
 |---------|---------|-------------|
-| **v0.7.8** | 2026-08	| Remplacement des `delay()` bloquants par la librairie non-bloquante `NON_BLOCKING_DELAY` (vTaskDelay sur ESP32, busy-wait + yield sur ESP8266) ; dépendance déclarée dans `library.json` ; bump des exemples. |
+| **v0.7.8** | 2026-08	| Remplacement des `delay()` bloquants par la librairie non-bloquante `NON_BLOCKING_DELAY` (vTaskDelay sur ESP32, busy-wait + yield sur ESP8266) ; dépendance déclarée dans `library.json` ; bump des exemples. Connexion refactorisée en **machine à états non-bloquante** : `begin()` conservé bloquant (compatibilité), ajout de `beginAsync()` et `waitForConnection()`, `update()` pilote la tentative et le failover sans jamais bloquer. |
 | **v0.7.7** | 2026-06	| lastTriedNetwork est déclarée en static localement dans update(), mais elle n'est pas un membre de la classe. Si on veut la rendre réellement utilisable et persistante entre les appels, il faut la déclarer comme variable membre privée en _lastTriedNetwork. |
 | v0.7.6 | 2026-06	| la variable lastTriedNetwork est déclarée en static mais jamais utilisée. Correction pour qu'elle serve réellement à éviter de réessayer immédiatement le même réseau qui vient d'échouer  |
 | v0.7.5 | 2026-06	| Refonte du basculement automatique : parcours circulaire forcé de tous les réseaux configurés pour garantir que chaque réseau est testé ; _connectToNetwork() ne réinitialise plus le failCount au début de la tentative (uniquement sur connexion réussie) ; _findBestNetwork() simplifié avec exploration systématique ; correction du hostname ESP8266 appliqué avant WiFi.mode(WIFI_STA) ; résolution du bug des pointeurs const char* vers tableaux externes |

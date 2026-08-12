@@ -16,6 +16,8 @@ MDNSService	KEYWORD1
 #######################################
 
 begin	KEYWORD2
+beginAsync	KEYWORD2
+waitForConnection	KEYWORD2
 update	KEYWORD2
 addNetwork	KEYWORD2
 clearNetworks	KEYWORD2
