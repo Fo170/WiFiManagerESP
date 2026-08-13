@@ -398,6 +398,9 @@ public:
      */
     void printStatus(bool detailed = false);
 
+    /** @brief Résume l'état WiFi (connecté + IP, Gateway, DNS, MAC, hostname, SSID, RSSI) dans une String */
+    String Etat_Wifi();
+
     // ===========================================
     // GESTION DE LA CONNEXION
     // ===========================================
@@ -1535,6 +1538,25 @@ int WiFiManagerESP::updateStatus() {
     }
 
     return (int)_currentStatus;
+}
+
+String WiFiManagerESP::Etat_Wifi() {
+    String s = "WiFi: ";
+    if (isConnected()) {
+        s += "✅ connecté";
+        s += "\n🌐 IP: " + getLocalIP();
+        s += "\n📡 Gateway: " + getGatewayIP();
+        s += "\n🖧 DNS: " + getDnsIP();
+        s += "\n🆔 MAC: " + getMacAddress();
+        s += "\nHostname: " + getHostname();
+        s += "\nSSID: " + getSSID();
+        s += "\nRSSI: ";
+        s += String(getRSSI());
+        s += " dBm 📶";
+    } else {
+        s += "❌ non connecté";
+    }
+    return s;
 }
 
 void WiFiManagerESP::printStatus(bool detailed) {
