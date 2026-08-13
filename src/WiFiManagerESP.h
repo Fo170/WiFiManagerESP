@@ -421,7 +421,7 @@ public:
     /** @return SSID du réseau auquel l'appareil est connecté */
     String getSSID();
 
-    /** @return Force du signal WiFi en dBm (négatif, plus proche de 0 = meilleur) */
+    /** @return Force du signal WiFi en dBm (négatif, plus proche de 0 = meilleur), ou -127 si non connecté */
     int8_t getRSSI();
 
     /** @return Description textuelle de l'état WiFi actuel */
@@ -1679,6 +1679,9 @@ String WiFiManagerESP::getSSID() {
 }
 
 int8_t WiFiManagerESP::getRSSI() {
+    if (!isConnected()) {
+        return -127;
+    }
     return WIFI_LIB.RSSI();
 }
 
