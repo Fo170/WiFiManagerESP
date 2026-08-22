@@ -7,7 +7,7 @@
 
 Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32 : mode point d'accès (AP), **connexion non-bloquante (machine à états)**, **gestion multi-réseaux avec basculement automatique (failover)**, reconnexion automatique native du stack WiFi, historique des connexions et mDNS.
 
-Version 0.7.8
+Version 0.7.9
 
 ## ✨ Fonctionnalités
 
@@ -40,7 +40,7 @@ platform = espressif32
 board = esp32dev
 framework = arduino
 lib_deps = 
-    https://github.com/Fo170/WiFiManagerESP.git@^0.7.8
+    https://github.com/Fo170/WiFiManagerESP.git@^0.7.9
 ```
 
 > **Dépendance requise** : la bibliothèque `NON_BLOCKING_DELAY` est utilisée pour les délais non bloquants.
@@ -125,6 +125,29 @@ void update()  // À appeler dans loop() pour le failover auto
 > **Sémantique de retour (async)** : `switchToNetwork()`, `switchToNextNetwork()` et `reconnect()`
 > retournent `true` si la **tentative a été lancée** (non-bloquant). Le résultat réel s'observe
 > via `isConnected()` / `update()`.
+
+### Hooks application + power-save (v0.7.9)
+
+```cpp
+// Appelé à CHAQUE connexion réussie — ré-arme un stack dépendant du WiFi (ESP-NOW) :
+wifiManager.onWiFiConnected([]() {
+  esv.rearm();        // ré-initialise ESP-NOW + callbacks (effacés par un reset WiFi)
+  esv.rearmPeers();   // ré-enregistre les peers au driver
+});
+wifiManager.onWiFiDisconnected([]() {
+  // ex. couper proprement les envois ESP-NOW
+});
+
+wifiManager.setPowerSaveOff(true);   // défaut : coupe le power-save après connexion (ESP-NOW)
+```
+
+> **Pourquoi couper le power-save ?** En mode `WIFI_PS_MIN_MODEM` (défaut ESP32), la radio dort
+> périodiquement et **manque des trames ESP-NOW entrantes** (perte mesurée ~25-30 %). `setSleep(false)`
+> / `WIFI_NONE_SLEEP` garde la radio éveillée.
+>
+> **Diagnostic des resets** : chaque `_resetWiFi()` (qui efface le stack ESP-NOW) est compté —
+> `getResetCount()` / `getLastResetTime()` — et loggé (`🔄 reset WiFi #n`). Utile pour corréler
+> pertes ESP-NOW ↔ flapping WiFi.
 
 ### mDNS (Multicast DNS)
 
@@ -370,6 +393,7 @@ Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou un
 
 | Version |   Date  | Changements |
 |---------|---------|-------------|
+| **v0.7.9** | 2026-08	| **Intégration ESP-NOW** : hooks applicatifs `onWiFiConnected()` / `onWiFiDisconnected()` (appelés à chaque connexion réussie / échec — pour ré-armer un stack dépendant du WiFi, ex. `esv.rearm()` + `esv.rearmPeers()`) ; **coupe le power-save WiFi après connexion** (`setPowerSaveOff(true)` par défaut → `WiFi.setSleep(false)` ESP32 / `WIFI_NONE_SLEEP` ESP8266) car le modem sleep fait manquer des trames ESP-NOW entrantes (~25-30 % de perte) ; compteur de réinitialisations WiFi `getResetCount()` / `getLastResetTime()` + log `🔄 reset WiFi #n` dans `_resetWiFi()` (chaque reset efface le stack ESP-NOW). |
 | **v0.7.8** | 2026-08	| Remplacement des `delay()` bloquants par la librairie non-bloquante `NON_BLOCKING_DELAY` (vTaskDelay sur ESP32, busy-wait + yield sur ESP8266) ; dépendance déclarée dans `library.json` ; bump des exemples. **Connexion refactorisée en machine à états non-bloquante** : `begin()` conservé bloquant (compatibilité), ajout de `beginAsync()` et `waitForConnection()`, `update()` pilote la tentative et le failover sans jamais bloquer (fin du freeze de 10-15 s), `switchToNetwork()`/`switchToNextNetwork()`/`reconnect()` retournent désormais `true` si la tentative a été lancée. **Corrections de bugs** : reconnexion automatique rétablie après perte de lien (l'état restait bloqué sur `CONNECTED` et le failover ne se déclenchait plus) ; failover immédiat sur `WL_CONNECT_FAILED` (ex. mot de passe erroné) sans attendre le timeout complet. Ajout de `setAutoReconnect()` (défaut activé) : le stack WiFi retente lui-même le réseau courant sur coupures brèves, la bibliothèque ne fail-over que si la coupure persiste. |
 | **v0.7.7** | 2026-06	| lastTriedNetwork est déclarée en static localement dans update(), mais elle n'est pas un membre de la classe. Si on veut la rendre réellement utilisable et persistante entre les appels, il faut la déclarer comme variable membre privée en _lastTriedNetwork. |
 | v0.7.6 | 2026-06	| la variable lastTriedNetwork est déclarée en static mais jamais utilisée. Correction pour qu'elle serve réellement à éviter de réessayer immédiatement le même réseau qui vient d'échouer  |

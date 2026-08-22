@@ -1,6 +1,6 @@
 {
   "name": "WiFiManagerESP",
-  "version": "0.7.8",
+  "version": "0.7.9",
   "description": "Bibliothèque pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32 avec support du mode point d'accès (AP), multi-réseaux avec basculement automatique (failover), historique des connexions, et mDNS (Multicast DNS) avec services annoncés",
   "keywords": "wifi, esp8266, esp32, access-point, ap, sta, network, iot, mdns, multicast-dns, failover, multi-network",
   "repository": {

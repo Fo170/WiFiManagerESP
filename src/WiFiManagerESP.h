@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.7.8 - Multi-Réseaux + mDNS
+// v0.7.9 - Multi-Réseaux + mDNS
 // ===========================================
 
 /**
@@ -8,7 +8,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.7.8
+ * @version 0.7.9
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -25,6 +25,7 @@
 #define WIFIMANAGER_ESP_H
 
 #include <Arduino.h>
+#include <functional>
 #include "Delay.h"
 
 // ===========================================
@@ -412,6 +413,37 @@ public:
     void disconnect();
 
     // ===========================================
+    // HOOKS APPLICATION (v0.7.9)
+    // ===========================================
+
+    /**
+     * @brief Callback appelé à CHAQUE connexion WiFi réussie (_onConnectSuccess).
+     *
+     * Utile pour ré-armer un stack dépendant du WiFi (ex. ESP-NOW : esv.rearm()
+     * + esv.rearmPeers() après un reset WiFi qui a effacé le stack).
+     */
+    void onWiFiConnected(std::function<void()> cb) { _onConnectedCb = cb; }
+
+    /** @brief Callback appelé à chaque échec de connexion (_onConnectFail). */
+    void onWiFiDisconnected(std::function<void()> cb) { _onDisconnectedCb = cb; }
+
+    /**
+     * @brief Désactive (défaut true) le power-save WiFi après connexion.
+     *
+     * ESP32 : setSleep(false) (WIFI_PS_NONE) ; ESP8266 : WIFI_NONE_SLEEP.
+     * Le power-save (modem sleep) fait dormir la radio → des trames ESP-NOW
+     * entrantes sont manquées (~25-30 % de perte mesurée). À couper quand
+     * ESP-NOW est utilisé.
+     */
+    void setPowerSaveOff(bool enable) { _powerSaveOff = enable; }
+
+    /** @return Nombre de réinitialisations WiFi effectuées (_resetWiFi). */
+    uint32_t getResetCount() const { return _resetCount; }
+
+    /** @return Timestamp (ms) de la dernière réinitialisation WiFi. */
+    unsigned long getLastResetTime() const { return _lastResetTime; }
+
+    // ===========================================
     // GETTERS RÉSEAU
     // ===========================================
 
@@ -547,6 +579,15 @@ private:
     bool _wifiInitialized = false;                  ///< WiFi initialisé
     unsigned long _lastConnectionAttempt = 0;       ///< Timestamp dernière tentative
     unsigned long _connectionStartTime = 0;         ///< Timestamp début connexion actuelle
+
+    // ===========================================
+    // v0.7.9 — hooks + power-save + compteur de resets
+    // ===========================================
+    std::function<void()> _onConnectedCb;           ///< Callback connexion réussie
+    std::function<void()> _onDisconnectedCb;        ///< Callback échec connexion
+    bool _powerSaveOff = true;                      ///< Coupe le power-save après connexion (ESP-NOW)
+    uint32_t _resetCount = 0;                       ///< Nb de _resetWiFi() (diagnostic ESP-NOW)
+    unsigned long _lastResetTime = 0;               ///< Timestamp du dernier _resetWiFi()
 
     // ===========================================
     // VARIABLES MEMBRES - HISTORIQUE
@@ -898,6 +939,15 @@ void WiFiManagerESP::_onConnectSuccess() {
     Serial.printf("[WiFiManagerESP] ✅ CONNECTÉ! IP=%s RSSI=%d dBm\n",
         WIFI_LIB.localIP().toString().c_str(), WIFI_LIB.RSSI());
 
+    // v0.7.9 : couper le power-save WiFi (la radio dort → trames ESP-NOW manquées)
+    if (_powerSaveOff) {
+#if defined(ESP8266)
+        WIFI_LIB.setSleepMode(WIFI_NONE_SLEEP);
+#else
+        WIFI_LIB.setSleep(false);
+#endif
+    }
+
     _networks[index].failCount = 0; // ← Reset SEULEMENT au succès
     _lastConnectedNetwork = index;
     _wifiInitialized = true;
@@ -911,6 +961,9 @@ void WiFiManagerESP::_onConnectSuccess() {
     }
 
     updateStatus();
+
+    // v0.7.9 : hook application (ex. rearm ESP-NOW) à CHAQUE connexion réussie
+    if (_onConnectedCb) _onConnectedCb();
 }
 
 void WiFiManagerESP::_onConnectFail() {
@@ -929,6 +982,9 @@ void WiFiManagerESP::_onConnectFail() {
 
     // Laisse update() déclencher le failover au prochain passage (état IDLE)
     _connState = ConnectionState::CONN_FAILED;
+
+    // v0.7.9 : hook application (ex. couper les envois ESP-NOW)
+    if (_onDisconnectedCb) _onDisconnectedCb();
 }
 
 // ===========================================
@@ -989,6 +1045,10 @@ int WiFiManagerESP::_findBestNetwork() {
 }
 
 void WiFiManagerESP::_resetWiFi() {
+    // v0.7.9 : diagnostic — chaque reset efface le stack ESP-NOW (esp_wifi_stop/deinit)
+    _resetCount++;
+    _lastResetTime = millis();
+    Serial.printf("[WiFiManagerESP] 🔄 reset WiFi #%lu (%lu ms)\n", _resetCount, _lastResetTime);
     WIFI_LIB.disconnect(true);
     NON_BLOCKING_DELAY(300);
     WIFI_LIB.mode(WIFI_OFF);
@@ -1546,7 +1606,7 @@ String WiFiManagerESP::Etat_Wifi() {
         s += "✅ connecté";
         s += "\n🌐 IP: " + getLocalIP();
         s += "\n📡 Gateway: " + getGatewayIP();
-        s += "\n🖧 DNS: " + getDnsIP();
+        s += "\n🖧  DNS: " + getDnsIP();
         s += "\n🆔 MAC: " + getMacAddress();
         s += "\nHostname: " + getHostname();
         s += "\nSSID: " + getSSID();
@@ -1599,7 +1659,7 @@ void WiFiManagerESP::printStatus(bool detailed) {
             Serial.println(getLocalIP());
             Serial.print("📡 Gateway: ");
             Serial.println(getGatewayIP());
-            Serial.print("🖧 DNS: ");
+            Serial.print("🖧  DNS: ");
             Serial.println(getDnsIP());
             Serial.print("🆔 MAC: ");
             Serial.println(getMacAddress());
