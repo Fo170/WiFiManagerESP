@@ -1,14 +1,15 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.7.9 - Multi-Réseaux + mDNS
+// v0.9.0 - Multi-Réseaux + mDNS
 // ===========================================
+
 
 /**
  * @file WiFiManagerESP.h
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.7.9
+ * @version 0.9.0
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -26,6 +27,7 @@
 
 #include <Arduino.h>
 #include <functional>
+#include <EEPROM.h>
 #include "Delay.h"
 
 // ===========================================
@@ -49,6 +51,8 @@
 #if defined(ESP32)
   #include <WiFi.h>
   #include <ESPmDNS.h>
+  #include <esp_wifi.h>
+  #include <esp_system.h>
   #define WIFI_MODE_APSTA WIFI_MODE_APSTA
 #endif
 
@@ -61,13 +65,32 @@
 // ===========================================
 
 /** @brief Nombre maximum de réseaux WiFi configurables */
-#define WIFIMANAGER_MAX_NETWORKS 10
+#ifndef WIFIMANAGER_MAX_NETWORKS
+#define WIFIMANAGER_MAX_NETWORKS 3
+#endif
 
 /** @brief Nombre maximum d'entrées dans l'historique des connexions */
-#define WIFIMANAGER_MAX_HISTORY 20
+#ifndef WIFIMANAGER_MAX_HISTORY
+#define WIFIMANAGER_MAX_HISTORY 8
+#endif
 
 /** @brief Nombre maximum de services mDNS annoncés */
-#define WIFIMANAGER_MAX_MDNS_SERVICES 5
+#ifndef WIFIMANAGER_MAX_MDNS_SERVICES
+#define WIFIMANAGER_MAX_MDNS_SERVICES 2
+#endif
+
+/** @brief Nombre maximum de résultats conservés par un scan (scanNetworksAsync) */
+#ifndef WIFIMANAGER_MAX_SCAN_RESULTS
+#define WIFIMANAGER_MAX_SCAN_RESULTS 12
+#endif
+
+/** @brief Taille de l'EEPROM allouée à la persistance des réseaux (octets) */
+#ifndef WIFIMANAGER_EEPROM_SIZE
+#define WIFIMANAGER_EEPROM_SIZE 512
+#endif
+
+/** @brief Version du format de persistance EEPROM */
+#define WIFIMANAGER_STORAGE_VERSION 1
 
 // ===========================================
 // STRUCTURES DE DONNÉES
@@ -77,8 +100,8 @@
  * @brief Structure représentant un réseau WiFi configuré
  */
 struct WiFiNetwork {
-    const char* ssid;           ///< Nom du réseau
-    const char* password;       ///< Mot de passe
+    char ssid[33];              ///< Nom du réseau (copie possédée)
+    char password[64];          ///< Mot de passe (copie possédée)
     int priority;               ///< Priorité (0 = plus haute)
     unsigned int failCount;     ///< Nombre d'échecs consécutifs
     unsigned long lastFail;     ///< Timestamp du dernier échec (ms)
@@ -95,6 +118,7 @@ struct ConnectionHistoryEntry {
     char status[32];            ///< Statut (Connecté, Échec, Déconnecté...)
     char ip[16];                ///< Adresse IP
     int rssi;                   ///< Force du signal en dBm
+    uint8_t authMode;           ///< Mode d'authentification (wl_enc_type / wifi_auth_mode_t)
     bool used;                  ///< true si cette entrée contient des données
 };
 /**
@@ -105,6 +129,16 @@ struct MDNSService {
     char protocol[8];           ///< Protocole (ex: "tcp")
     uint16_t port;              ///< Port du service
     bool configured;            ///< true si ce slot est utilisé
+};
+
+/**
+ * @brief Structure représentant un résultat de scan WiFi (cache scanNetworksAsync)
+ */
+struct ScanResult {
+    char ssid[33];              ///< Nom du réseau
+    int8_t rssi;                ///< Force du signal en dBm
+    uint8_t encryption;         ///< Type de chiffrement (wl_enc_type / wifi_auth_mode_t)
+    int8_t channel;             ///< Canal radio
 };
 
 // ===========================================
@@ -206,9 +240,56 @@ public:
     bool addNetwork(const char* ssid, const char* password, int priority = 0);
 
     /**
+     * @brief Ajoute un réseau et lance immédiatement sa connexion (non-bloquant)
+     * @param ssid Nom du réseau WiFi
+     * @param password Mot de passe du réseau WiFi (défaut: vide)
+     * @param priority Priorité du réseau (0 = plus haute, défaut: 0)
+     * @return true si le réseau a été ajouté et la tentative lancée, false sinon
+     * 
+     * @note Provisionnement à chaud : utilisable au démarrage sans réseau configuré.
+     *       La connexion progresse dans update() (à appeler dans loop()).
+     *       Échoue (retourne false) si la liste est pleine ou le SSID invalide.
+     */
+    bool connectToNetwork(const char* ssid, const char* password = "", int priority = 0);
+
+    /**
      * @brief Supprime tous les réseaux configurés
      */
     void clearNetworks();
+
+    /**
+     * @brief Supprime un réseau configuré par son index
+     * @param index Index du réseau à supprimer
+     * @return true si supprimé, false si index invalide
+     */
+    bool removeNetwork(int index);
+
+    /**
+     * @brief Vérifie si un réseau (par SSID) est déjà configuré
+     * @param ssid Nom du réseau recherché
+     * @return true si présent dans la liste
+     */
+    bool hasNetwork(const char* ssid) const;
+
+    /**
+     * @brief Retourne l'index d'un réseau configuré par son SSID
+     * @param ssid Nom du réseau recherché
+     * @return Index du réseau, ou -1 si absent
+     */
+    int indexOfNetwork(const char* ssid) const;
+
+    /**
+     * @brief Met à jour un réseau configuré existant
+     * @param index Index du réseau à modifier
+     * @param ssid Nouveau nom du réseau
+     * @param password Nouveau mot de passe
+     * @param priority Nouvelle priorité
+     * @return true si modifié, false si index/SSID invalide
+     * 
+     * @note Re-trie la liste par priorité ; si le réseau modifié était le réseau
+     *       courant, l'index courant est ajusté.
+     */
+    bool updateNetwork(int index, const char* ssid, const char* password, int priority = 0);
 
     /**
      * @brief Retourne le nombre de réseaux configurés
@@ -282,6 +363,22 @@ public:
      */
     void setFailCooldown(unsigned long ms);
 
+    /**
+     * @brief Configure le timeout d'une tentative de connexion
+     * @param ms Délai maximum par tentative (défaut: 15000)
+     */
+    void setConnectTimeout(uint32_t ms);
+
+    /**
+     * @brief Active le basculement automatique sur signal trop faible
+     * @param dbm Seuil de RSSI (dBm, valeur négative). 0 = désactivé (défaut).
+     * 
+     * @note Si le RSSI descend sous ce seuil, le réseau courant est considéré
+     *       comme défaillant et le failover est déclenché. Hystérésis de +5 dBm
+     *       pour éviter les bascules répétées.
+     */
+    void setMinRSSI(int8_t dbm);
+
     // ===========================================
     // GESTION DES CREDENTIALS (MODE LEGACY)
     // ===========================================
@@ -304,6 +401,67 @@ public:
      * @warning Un mot de passe de moins de 8 caractères entraînera la création d'un AP ouvert
      */
     void setAPCredentials(const char* ap_ssid, const char* ap_password = "password123");
+
+    // ===========================================
+    // CONFIGURATION IP / RADIO
+    // ===========================================
+
+    /**
+     * @brief Configure une adresse IP statique (à appeler AVANT begin/beginAsync)
+     * @param ip Adresse IP locale
+     * @param gateway Adresse de la passerelle
+     * @param subnet Masque de sous-réseau
+     * @param dns1 DNS primaire (optionnel)
+     * @param dns2 DNS secondaire (optionnel)
+     * 
+     * @note La configuration est réappliquée à chaque reset WiFi interne.
+     */
+    void setStaticIP(IPAddress ip, IPAddress gateway, IPAddress subnet,
+                     IPAddress dns1 = (uint32_t)0, IPAddress dns2 = (uint32_t)0);
+
+    /** @brief Repasse en mode DHCP (annule setStaticIP) */
+    void useDHCP();
+
+    /**
+     * @brief Règle la puissance d'émission WiFi
+     * @param dBm Puissance en dBm (ESP8266: valeur continue ; ESP32: palier le plus proche)
+     * @return true si appliqué
+     */
+    bool setTxPower(float dBm);
+
+    // ===========================================
+    // PERSISTANCE (EEPROM CHIFFRÉE AES-128)
+    // ===========================================
+
+    /**
+     * @brief Définit la clé utilisateur de chiffrement de la persistance
+     * @param key Clé secrète (chaîne). La clé finale = SHA256(salt + chipId + key).
+     * 
+     * @note Sans clé utilisateur, la clé est dérivée du chip uniquement (plus faible).
+     * @warning La clé est stockée dans le firmware : protection « au repos » uniquement.
+     */
+    void setStorageKey(const char* key);
+
+    /**
+     * @brief Sauvegarde les réseaux configurés dans l'EEPROM (chiffrés)
+     * @return true si la sauvegarde a réussi
+     */
+    bool saveNetworks();
+
+    /**
+     * @brief Charge les réseaux depuis l'EEPROM (chiffrés) vers la liste
+     * @return true si des réseaux ont été chargés
+     * 
+     * @note Ne remplace PAS la liste existante : ajoute les réseaux chargés.
+     *       Utilisez clearNetworks() avant si nécessaire.
+     */
+    bool loadNetworks();
+
+    /**
+     * @brief Efface les réseaux persistés et réinitialise l'EEPROM
+     * @return true si l'opération a réussi
+     */
+    bool factoryReset();
 
     // ===========================================
     // CONFIGURATION HOSTNAME
@@ -378,6 +536,14 @@ public:
      */
     bool addMDNSTxtRecord(const char* serviceName, const char* protocol, const char* key, const char* value);
 
+    /**
+     * @brief Supprime un service mDNS annoncé
+     * @param name Nom du service (ex: "http")
+     * @param protocol Protocole (ex: "tcp")
+     * @return true si le service a été trouvé et supprimé
+     */
+    bool removeMDNSService(const char* name, const char* protocol);
+
     // ===========================================
     // ÉTATS ET INFORMATIONS
     // ===========================================
@@ -401,6 +567,52 @@ public:
 
     /** @brief Résume l'état WiFi (connecté + IP, Gateway, DNS, MAC, hostname, SSID, RSSI) dans une String */
     String Etat_Wifi();
+
+    /**
+     * @brief Scanne les réseaux WiFi disponibles et retourne la liste formatée
+     * @return String contenant la liste des réseaux (numéro, SSID, RSSI, chiffrement)
+     * 
+     * Effectue un scan bloquant, affiche les résultats sur Serial, et met à jour
+     * le chiffrement du réseau actuellement connecté si celui-ci est trouvé.
+     */
+    String scanNetworks();
+
+    /**
+     * @brief Lance un scan asynchrone (non-bloquant)
+     * @return true si le scan a été lancé
+     * 
+     * @note Résultats disponibles via getScanResultCount()/getScanResultSSID()...
+     *       une fois le scan terminé (surveillé automatiquement par update()).
+     *       Le nombre de résultats conservés est borné par WIFIMANAGER_MAX_SCAN_RESULTS.
+     */
+    bool scanNetworksAsync();
+
+    /** @return true si un scan asynchrone est en cours */
+    bool isScanRunning() const;
+
+    /** @return Nombre de résultats disponibles dans le cache du dernier scan */
+    int getScanResultCount() const;
+
+    /** @return SSID du résultat de scan à l'index donné, ou chaîne vide si invalide */
+    String getScanResultSSID(int index) const;
+
+    /** @return RSSI (dBm) du résultat de scan à l'index donné */
+    int8_t getScanResultRSSI(int index) const;
+
+    /** @return Type de chiffrement du résultat de scan à l'index donné */
+    uint8_t getScanResultEncryption(int index) const;
+
+    /** @return Canal radio du résultat de scan à l'index donné */
+    int8_t getScanResultChannel(int index) const;
+
+    /**
+     * @brief Recherche un SSID dans le cache du dernier scan
+     * @param ssid SSID recherché
+     * @param rssi (sortie, optionnel) RSSI trouvé
+     * @param encryption (sortie, optionnel) chiffrement trouvé
+     * @return Index du résultat, ou -1 si absent
+     */
+    int findNetworkInScan(const char* ssid, int8_t* rssi = nullptr, uint8_t* encryption = nullptr) const;
 
     // ===========================================
     // GESTION DE LA CONNEXION
@@ -477,6 +689,27 @@ public:
     /** @return Hostname actuellement configuré */
     String getHostname();
 
+    /** @return Adresse MAC (BSSID) du point d'accès connecté, ou chaîne vide si non connecté */
+    String getBSSID();
+
+    /** @return Canal radio du réseau connecté, ou 0 si non connecté */
+    int32_t getChannel();
+
+    /** @return Masque de sous-réseau (ex: 255.255.255.0) */
+    String getSubnetMask();
+
+    /** @return Qualité du signal 0-100 % (basée sur le RSSI), ou -1 si non connecté */
+    int getSignalQuality();
+
+    /** @return Code de raison de la dernière déconnexion (voir wl_status_t / wifi_err_reason_t) */
+    int getLastDisconnectReason();
+
+    /** @return Description textuelle de la dernière raison de déconnexion */
+    String getLastDisconnectReasonText();
+
+    /** @return Nombre de clients actuellement connectés au point d'accès (0 si AP inactif) */
+    int getAPClientCount();
+
     // ===========================================
     // HISTORIQUE DES CONNEXIONS
     // ===========================================
@@ -523,6 +756,34 @@ private:
     int _maxRetries = 3;                ///< Échecs avant basculement
     unsigned long _retryDelay = 10000;  ///< Délai entre tentatives (ms)
     unsigned long _failCooldown = 60000; ///< Délai avant réessai après échec (ms)
+    uint32_t _connectTimeout = 15000;   ///< Timeout d'une tentative de connexion (ms)
+    int8_t _minRSSI = 0;                ///< Seuil de basculement sur signal faible (0 = désactivé)
+    bool _rssiWeak = false;             ///< État d'hystérésis pour setMinRSSI
+
+    // ===========================================
+    // VARIABLES MEMBRES - IP STATIQUE
+    // ===========================================
+
+    bool _useStaticIP = false;          ///< Utilise une IP statique si vrai
+    IPAddress _staticIP;                ///< IP statique
+    IPAddress _staticGateway;           ///< Passerelle statique
+    IPAddress _staticSubnet;            ///< Masque statique
+    IPAddress _staticDns1;              ///< DNS primaire statique
+    IPAddress _staticDns2;              ///< DNS secondaire statique
+
+    // ===========================================
+    // VARIABLES MEMBRES - SCAN
+    // ===========================================
+
+    ScanResult _scanResults[WIFIMANAGER_MAX_SCAN_RESULTS]; ///< Cache des résultats de scan
+    int _scanResultCount = 0;           ///< Nombre de résultats valides
+    bool _scanAsyncRunning = false;     ///< Scan asynchrone en cours
+
+    // ===========================================
+    // VARIABLES MEMBRES - PERSISTANCE
+    // ===========================================
+
+    char _storageKey[33] = {0};         ///< Clé utilisateur de chiffrement EEPROM
 
     // ===========================================
     // VARIABLES MEMBRES - AP
@@ -548,7 +809,6 @@ private:
     char _mdnsHostname[64];                 ///< Nom mDNS actuellement utilisé
     MDNSService _mdnsServices[WIFIMANAGER_MAX_MDNS_SERVICES]; ///< Services mDNS configurés
     int _mdnsServiceCount = 0;              ///< Nombre de services configurés
-    bool _mdnsPendingStart = false;         ///< Démarrage mDNS en attente de connexion
 
     // ===========================================
     // VARIABLES MEMBRES - ÉTAT
@@ -579,6 +839,8 @@ private:
     bool _wifiInitialized = false;                  ///< WiFi initialisé
     unsigned long _lastConnectionAttempt = 0;       ///< Timestamp dernière tentative
     unsigned long _connectionStartTime = 0;         ///< Timestamp début connexion actuelle
+    uint8_t _currentAuthMode = 0xFF;                ///< Mode d'auth du réseau connecté (0xFF = inconnu)
+    int _lastDisconnectReason = 0;                  ///< Code de la dernière déconnexion (callbacks)
 
     // ===========================================
     // v0.7.9 — hooks + power-save + compteur de resets
@@ -645,12 +907,44 @@ private:
     /**
      * @brief Ajoute une entrée dans l'historique
      */
-    void _addToHistory(const char* ssid, const char* status, const char* ip, int rssi);
+    void _addToHistory(const char* ssid, const char* status, const char* ip, int rssi, uint8_t authMode);
 
     /**
      * @brief Formate un temps en millisecondes en chaîne lisible
      */
     String _formatTime(unsigned long ms) const;
+
+    /**
+     * @brief Convertit un code de chiffrement (mode d'auth) en texte lisible
+     * @param mode Code brut (wl_enc_type ESP8266 / wifi_auth_mode_t ESP32)
+     * @return Texte descriptif (ex: "WPA2", "WPA3", "Ouvert", "Inconnu")
+     */
+    String _getEncryptionText(uint8_t mode) const;
+
+    /**
+     * @brief Rafraîchit le chiffrement du réseau actuellement connecté
+     * ESP32: via esp_wifi_sta_get_ap_info() ; ESP8266: laissé inchangé (mis à jour par scanNetworks)
+     */
+    void _refreshCurrentAuthMode();
+
+    // ===========================================
+    // MÉTHODES PRIVÉES - SCAN / IP / CRYPTO
+    // ===========================================
+
+    /** @brief Copie les n premiers résultats du scan natif dans le cache interne */
+    void _cacheScanResults(int n);
+
+    /** @brief Applique la configuration IP (statique ou DHCP) au stack WiFi */
+    void _applyStaticIP();
+
+    /** @brief Dérive la clé AES 16 octets depuis salt + chipId + clé utilisateur */
+    void _deriveStorageKey(uint8_t out[16]) const;
+
+    /** @brief Retourne un entier aléatoire 32 bits (plateforme) */
+    static uint32_t _random32();
+
+    /** @brief Renvoie l'identifiant unique du chip (32 bits) */
+    static uint32_t _chipId();
 
     // ===========================================
     // MÉTHODES PRIVÉES - mDNS
@@ -676,6 +970,13 @@ private:
      * @return true si une tentative a été lancée
      */
     bool _beginInternal(bool enableAP, uint32_t timeout);
+
+    /**
+     * @brief Initialise le stack WiFi (callbacks, hostname, mode STA/AP)
+     * @param enableAP Active le mode AP+STA
+     * @note Idempotent : peut être appelé par begin()/beginAsync() ou connectToNetwork()
+     */
+    void _initWiFi(bool enableAP);
 
     /** @brief Configure les callbacks d'événements WiFi selon la plateforme */
     void _setupCallbacks();
@@ -709,8 +1010,8 @@ private:
 WiFiManagerESP::WiFiManagerESP() {
     // Initialiser le tableau des réseaux
     for (int i = 0; i < WIFIMANAGER_MAX_NETWORKS; i++) {
-        _networks[i].ssid = nullptr;
-        _networks[i].password = nullptr;
+        _networks[i].ssid[0] = '\0';
+        _networks[i].password[0] = '\0';
         _networks[i].priority = 99;
         _networks[i].failCount = 0;
         _networks[i].lastFail = 0;
@@ -745,15 +1046,17 @@ bool WiFiManagerESP::addNetwork(const char* ssid, const char* password, int prio
         return false;
     }
 
-    _networks[_networkCount] = {
-        ssid,
-        password ? password : "",
-        priority,
-        0,      // failCount
-        0,      // lastFail
-        0,      // lastAttempt
-        true    // configured
-    };
+    WiFiNetwork& net = _networks[_networkCount];
+    strncpy(net.ssid, ssid, sizeof(net.ssid) - 1);
+    net.ssid[sizeof(net.ssid) - 1] = '\0';
+    const char* pass = password ? password : "";
+    strncpy(net.password, pass, sizeof(net.password) - 1);
+    net.password[sizeof(net.password) - 1] = '\0';
+    net.priority = priority;
+    net.failCount = 0;      // failCount
+    net.lastFail = 0;       // lastFail
+    net.lastAttempt = 0;    // lastAttempt
+    net.configured = true;  // configured
     _networkCount++;
 
     // Trier par priorité
@@ -763,10 +1066,38 @@ bool WiFiManagerESP::addNetwork(const char* ssid, const char* password, int prio
     return true;
 }
 
+bool WiFiManagerESP::connectToNetwork(const char* ssid, const char* password, int priority) {
+    // Ajout du réseau (échoue si liste pleine ou SSID invalide)
+    if (!addNetwork(ssid, password, priority)) {
+        return false;
+    }
+
+    // Renseigner la pile WiFi si aucun begin()/beginAsync() n'a encore été appelé
+    if (!_wifiInitialized) {
+        _initWiFi(false);
+    }
+
+    // Retrouver l'index du réseau ajouté (le tri par priorité a pu le déplacer)
+    int index = -1;
+    for (int i = 0; i < _networkCount; i++) {
+        if (_networks[i].configured && strcmp(_networks[i].ssid, ssid) == 0) {
+            index = i;
+            break;
+        }
+    }
+    if (index < 0) {
+        Serial.println("[WiFiManagerESP] ERREUR: réseau ajouté introuvable");
+        return false;
+    }
+
+    Serial.printf("[WiFiManagerESP] Provisionnement: connexion ciblée sur [%d] %s\n", index, ssid);
+    return switchToNetwork(index);
+}
+
 void WiFiManagerESP::clearNetworks() {
     for (int i = 0; i < WIFIMANAGER_MAX_NETWORKS; i++) {
-        _networks[i].ssid = nullptr;
-        _networks[i].password = nullptr;
+        _networks[i].ssid[0] = '\0';
+        _networks[i].password[0] = '\0';
         _networks[i].priority = 99;
         _networks[i].failCount = 0;
         _networks[i].lastFail = 0;
@@ -777,6 +1108,110 @@ void WiFiManagerESP::clearNetworks() {
     _currentNetwork = -1;
     _lastConnectedNetwork = -1;
     Serial.println("[WiFiManagerESP] Tous les réseaux ont été supprimés");
+}
+
+bool WiFiManagerESP::removeNetwork(int index) {
+    if (index < 0 || index >= _networkCount || !_networks[index].configured) {
+        Serial.printf("[WiFiManagerESP] ERREUR: index réseau invalide: %d\n", index);
+        return false;
+    }
+
+    Serial.printf("[WiFiManagerESP] Suppression du réseau [%d] %s\n", index, _networks[index].ssid);
+
+    // Décaler les entrées suivantes
+    for (int i = index; i < _networkCount - 1; i++) {
+        _networks[i] = _networks[i + 1];
+    }
+
+    // Vider le dernier slot
+    int last = _networkCount - 1;
+    _networks[last].ssid[0] = '\0';
+    _networks[last].password[0] = '\0';
+    _networks[last].priority = 99;
+    _networks[last].failCount = 0;
+    _networks[last].lastFail = 0;
+    _networks[last].lastAttempt = 0;
+    _networks[last].configured = false;
+    _networkCount--;
+
+    // Ajuster les index de référence
+    if (_currentNetwork == index) {
+        _currentNetwork = -1;
+    } else if (_currentNetwork > index) {
+        _currentNetwork--;
+    }
+    if (_lastConnectedNetwork == index) {
+        _lastConnectedNetwork = -1;
+    } else if (_lastConnectedNetwork > index) {
+        _lastConnectedNetwork--;
+    }
+    if (_lastTriedNetwork == index) {
+        _lastTriedNetwork = -1;
+    } else if (_lastTriedNetwork > index) {
+        _lastTriedNetwork--;
+    }
+    if (_connTargetIndex == index) {
+        _connTargetIndex = -1;
+    } else if (_connTargetIndex > index) {
+        _connTargetIndex--;
+    }
+
+    return true;
+}
+
+bool WiFiManagerESP::hasNetwork(const char* ssid) const {
+    return indexOfNetwork(ssid) >= 0;
+}
+
+int WiFiManagerESP::indexOfNetwork(const char* ssid) const {
+    if (ssid == nullptr) return -1;
+    for (int i = 0; i < _networkCount; i++) {
+        if (_networks[i].configured && strcmp(_networks[i].ssid, ssid) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool WiFiManagerESP::updateNetwork(int index, const char* ssid, const char* password, int priority) {
+    if (index < 0 || index >= _networkCount || !_networks[index].configured) {
+        Serial.printf("[WiFiManagerESP] ERREUR: index réseau invalide: %d\n", index);
+        return false;
+    }
+    if (ssid == nullptr || strlen(ssid) == 0) {
+        Serial.println("[WiFiManagerESP] ERREUR: SSID invalide");
+        return false;
+    }
+
+    // Mémoriser les SSID référencés AVANT le tri (pour recalculer les index)
+    char curSsid[33] = {0};
+    bool hasCur = (_currentNetwork >= 0 && _currentNetwork < _networkCount);
+    if (hasCur) strncpy(curSsid, _networks[_currentNetwork].ssid, sizeof(curSsid) - 1);
+    char lastSsid[33] = {0};
+    bool hasLast = (_lastConnectedNetwork >= 0 && _lastConnectedNetwork < _networkCount);
+    if (hasLast) strncpy(lastSsid, _networks[_lastConnectedNetwork].ssid, sizeof(lastSsid) - 1);
+    char targetSsid[33] = {0};
+    bool hasTarget = (_connState == ConnectionState::CONN_CONNECTING &&
+                      _connTargetIndex >= 0 && _connTargetIndex < _networkCount);
+    if (hasTarget) strncpy(targetSsid, _networks[_connTargetIndex].ssid, sizeof(targetSsid) - 1);
+
+    WiFiNetwork& net = _networks[index];
+    strncpy(net.ssid, ssid, sizeof(net.ssid) - 1);
+    net.ssid[sizeof(net.ssid) - 1] = '\0';
+    const char* pass = password ? password : "";
+    strncpy(net.password, pass, sizeof(net.password) - 1);
+    net.password[sizeof(net.password) - 1] = '\0';
+    net.priority = priority;
+
+    _sortNetworksByPriority();
+
+    // Recalculer les index (le tri a pu changer les positions)
+    _currentNetwork = hasCur ? indexOfNetwork(curSsid) : -1;
+    _lastConnectedNetwork = hasLast ? indexOfNetwork(lastSsid) : -1;
+    if (hasTarget) _connTargetIndex = indexOfNetwork(targetSsid);
+
+    Serial.printf("[WiFiManagerESP] Réseau mis à jour: %s (priorité=%d)\n", ssid, priority);
+    return true;
 }
 
 int WiFiManagerESP::getNetworkCount() const {
@@ -818,14 +1253,14 @@ bool WiFiManagerESP::switchToNextNetwork() {
     // Trouver et connecter au meilleur réseau suivant
     int nextNetwork = _findBestNetwork();
     if (nextNetwork >= 0) {
-        return _startConnection(nextNetwork, 15000);
+        return _startConnection(nextNetwork, _connectTimeout);
     }
 
     // Si aucun réseau n'est disponible, réessayer le premier
     if (_networkCount > 0) {
         Serial.println("[WiFiManagerESP] Tous les réseaux en cooldown, réessai du premier");
         _networks[0].failCount = 0; // Reset le compteur
-        return _startConnection(0, 15000);
+        return _startConnection(0, _connectTimeout);
     }
 
     return false;
@@ -839,7 +1274,7 @@ bool WiFiManagerESP::switchToNetwork(int index) {
 
     Serial.printf("[WiFiManagerESP] Basculement vers le réseau %d: %s\n", 
                   index, _networks[index].ssid);
-    return _startConnection(index, 15000);
+    return _startConnection(index, _connectTimeout);
 }
 
 void WiFiManagerESP::setAutoSwitch(bool enable) {
@@ -866,6 +1301,21 @@ void WiFiManagerESP::setRetryDelay(unsigned long ms) {
 void WiFiManagerESP::setFailCooldown(unsigned long ms) {
     _failCooldown = ms;
     Serial.printf("[WiFiManagerESP] Fail cooldown: %lu ms\n", _failCooldown);
+}
+
+void WiFiManagerESP::setConnectTimeout(uint32_t ms) {
+    _connectTimeout = ms;
+    Serial.printf("[WiFiManagerESP] Timeout de connexion: %lu ms\n", (unsigned long)_connectTimeout);
+}
+
+void WiFiManagerESP::setMinRSSI(int8_t dbm) {
+    _minRSSI = dbm;
+    _rssiWeak = false;
+    if (dbm == 0) {
+        Serial.println("[WiFiManagerESP] Basculement sur signal faible: DÉSACTIVÉ");
+    } else {
+        Serial.printf("[WiFiManagerESP] Basculement si RSSI < %d dBm\n", dbm);
+    }
 }
 
 // ===========================================
@@ -934,6 +1384,16 @@ void WiFiManagerESP::_handleConnection() {
 
 void WiFiManagerESP::_onConnectSuccess() {
     int index = _connTargetIndex;
+    if (index < 0 || index >= _networkCount) index = _currentNetwork;
+    if (index < 0 || index >= _networkCount) {
+        // Aucun réseau valide associé (ex. liste modifiée pendant la tentative)
+        _connState = ConnectionState::CONN_CONNECTED;
+        _wifiInitialized = true;
+        _refreshCurrentAuthMode();
+        updateStatus();
+        if (_onConnectedCb) _onConnectedCb();
+        return;
+    }
     _connState = ConnectionState::CONN_CONNECTED;
 
     Serial.printf("[WiFiManagerESP] ✅ CONNECTÉ! IP=%s RSSI=%d dBm\n",
@@ -952,8 +1412,11 @@ void WiFiManagerESP::_onConnectSuccess() {
     _lastConnectedNetwork = index;
     _wifiInitialized = true;
 
+    // Rafraîchir le chiffrement du réseau connecté
+    _refreshCurrentAuthMode();
+
     _addToHistory(_networks[index].ssid, "✅ Connecté", 
-                 WIFI_LIB.localIP().toString().c_str(), WIFI_LIB.RSSI());
+                  WIFI_LIB.localIP().toString().c_str(), WIFI_LIB.RSSI(), _currentAuthMode);
 
     // Démarrer mDNS automatiquement si activé
     if (_autoMDNS) {
@@ -968,15 +1431,19 @@ void WiFiManagerESP::_onConnectSuccess() {
 
 void WiFiManagerESP::_onConnectFail() {
     int index = _connTargetIndex;
+    if (index < 0 || index >= _networkCount) index = _currentNetwork;
     wl_status_t finalStatus = WIFI_LIB.status();
 
     Serial.printf("[WiFiManagerESP] ❌ Échec (status=%d: %s)\n", 
                  (int)finalStatus, _getStatusText(finalStatus).c_str());
 
-    _networks[index].failCount++;  // Incrémenté en cas d'échec
-    _networks[index].lastFail = millis();
-
-    _addToHistory(_networks[index].ssid, "❌ Échec", "", 0);
+    if (index >= 0 && index < _networkCount) {
+        _networks[index].failCount++;  // Incrémenté en cas d'échec
+        _networks[index].lastFail = millis();
+        _addToHistory(_networks[index].ssid, "❌ Échec", "", 0, 0xFF);
+    } else {
+        _addToHistory("?", "❌ Échec", "", 0, 0xFF);
+    }
 
     updateStatus();
 
@@ -1048,7 +1515,7 @@ void WiFiManagerESP::_resetWiFi() {
     // v0.7.9 : diagnostic — chaque reset efface le stack ESP-NOW (esp_wifi_stop/deinit)
     _resetCount++;
     _lastResetTime = millis();
-    Serial.printf("[WiFiManagerESP] 🔄 reset WiFi #%lu (%lu ms)\n", _resetCount, _lastResetTime);
+    Serial.printf("[WiFiManagerESP] 🔄 reset WiFi #%lu (%lu ms)\n", (unsigned long)_resetCount, _lastResetTime);
     WIFI_LIB.disconnect(true);
     NON_BLOCKING_DELAY(300);
     WIFI_LIB.mode(WIFI_OFF);
@@ -1056,9 +1523,10 @@ void WiFiManagerESP::_resetWiFi() {
     _configureHostname();
     WIFI_LIB.mode(WIFI_STA);
     NON_BLOCKING_DELAY(100);
+    _applyStaticIP();
 }
 
-void WiFiManagerESP::_addToHistory(const char* ssid, const char* status, const char* ip, int rssi) {
+void WiFiManagerESP::_addToHistory(const char* ssid, const char* status, const char* ip, int rssi, uint8_t authMode) {
     unsigned long now = millis();
     unsigned long h = now / 3600000;
     unsigned long m = (now % 3600000) / 60000;
@@ -1074,6 +1542,7 @@ void WiFiManagerESP::_addToHistory(const char* ssid, const char* status, const c
     strncpy(_history[_historyIndex].status, status, sizeof(_history[_historyIndex].status) - 1);
     strncpy(_history[_historyIndex].ip, ip, sizeof(_history[_historyIndex].ip) - 1);
     _history[_historyIndex].rssi = rssi;
+    _history[_historyIndex].authMode = authMode;
     _history[_historyIndex].used = true;
 
     _historyIndex = (_historyIndex + 1) % WIFIMANAGER_MAX_HISTORY;
@@ -1090,6 +1559,51 @@ String WiFiManagerESP::_formatTime(unsigned long ms) const {
     else if (min > 0) sprintf(buf, "%02lum%02lus", min, sec);
     else sprintf(buf, "%02lus", sec);
     return String(buf);
+}
+
+String WiFiManagerESP::_getEncryptionText(uint8_t mode) const {
+#if defined(ESP8266)
+    // ESP8266 renvoie des valeurs wl_enc_type (ENC_TYPE_*)
+    switch (mode) {
+        case ENC_TYPE_NONE:  return "Ouvert";
+        case ENC_TYPE_WEP:   return "🔒 WEP";
+        case ENC_TYPE_TKIP:  return "🔒 WPA (TKIP)";
+        case ENC_TYPE_CCMP:  return "🔒 WPA2 (AES)";
+        case ENC_TYPE_AUTO:  return "🔒 WPA/WPA2";
+        default:             return "❓ Inconnu";
+    }
+#elif defined(ESP32)
+    // ESP32 renvoie des valeurs wifi_auth_mode_t (WIFI_AUTH_*)
+    switch (mode) {
+        case WIFI_AUTH_OPEN:            return "Ouvert";
+        case WIFI_AUTH_WEP:             return "🔒 WEP";
+        case WIFI_AUTH_WPA_PSK:         return "🔒 WPA";
+        case WIFI_AUTH_WPA2_PSK:        return "🔒 WPA2";
+        case WIFI_AUTH_WPA_WPA2_PSK:    return "🔒 WPA/WPA2";
+        case WIFI_AUTH_WPA2_ENTERPRISE: return "🔒 WPA2-Entreprise";
+        case WIFI_AUTH_WPA3_PSK:        return "🔒 WPA3";
+        case WIFI_AUTH_WPA2_WPA3_PSK:   return "🔒 WPA2/WPA3";
+        case WIFI_AUTH_WAPI_PSK:        return "🔒 WAPI";
+        case WIFI_AUTH_WPA3_ENT_192:    return "🔒 WPA3-Ent-192";
+        default:                        return "❓ Inconnu";
+    }
+#else
+    return "❓ Inconnu";
+#endif
+}
+
+void WiFiManagerESP::_refreshCurrentAuthMode() {
+#if defined(ESP32)
+    // ESP32: lecture directe du mode d'auth du réseau connecté (sans scan)
+    wifi_ap_record_t apInfo;
+    if (esp_wifi_sta_get_ap_info(&apInfo) == ESP_OK) {
+        _currentAuthMode = static_cast<uint8_t>(apInfo.authmode);
+    }
+#elif defined(ESP8266)
+    // ESP8266: pas d'API directe sans scan -> remis à "inconnu".
+    // La valeur sera renseignée par scanNetworks() si le SSID courant est trouvé.
+    _currentAuthMode = 0xFF;
+#endif
 }
 
 // ===========================================
@@ -1187,6 +1701,31 @@ void WiFiManagerESP::clearMDNSServices() {
     }
     _mdnsServiceCount = 0;
     Serial.println("[WiFiManagerESP] Tous les services mDNS ont été supprimés");
+}
+
+bool WiFiManagerESP::removeMDNSService(const char* name, const char* protocol) {
+    int idx = _findMDNSService(name, protocol);
+    if (idx < 0) {
+        Serial.printf("[WiFiManagerESP] ERREUR: Service mDNS %s.%s non trouvé\n",
+                      name ? name : "?", protocol ? protocol : "?");
+        return false;
+    }
+
+    // Décaler les services suivants et vider le dernier slot
+    for (int i = idx; i < _mdnsServiceCount - 1; i++) {
+        _mdnsServices[i] = _mdnsServices[i + 1];
+    }
+    memset(&_mdnsServices[_mdnsServiceCount - 1], 0, sizeof(MDNSService));
+    _mdnsServices[_mdnsServiceCount - 1].configured = false;
+    _mdnsServiceCount--;
+
+    Serial.printf("[WiFiManagerESP] Service mDNS supprimé: %s.%s\n", name, protocol);
+
+    // Ré-annoncer la liste restante (redémarrage mDNS propre et portable)
+    if (_mdnsRunning) {
+        _startMDNSInternal();
+    }
+    return true;
 }
 
 int WiFiManagerESP::getMDNSServiceCount() const {
@@ -1305,18 +1844,19 @@ void WiFiManagerESP::printHistory() const {
     if (_historyCount == 0) {
         Serial.println("(vide)");
     } else {
-        Serial.println("Heure     | SSID                             | Statut         | IP              | RSSI");
-        Serial.println("----------+----------------------------------+----------------+-----------------+------");
+        Serial.println("Heure     | SSID                             | Statut         | IP              | RSSI | Chiffr.");
+        Serial.println("----------+----------------------------------+----------------+-----------------+------+---------");
         for (int i = 0; i < _historyCount; i++) {
             const ConnectionHistoryEntry* entry = getHistoryEntry(i);
             if (entry) {
-                Serial.printf("%-9s | %-32s | %-16s | %-15s | %4ddB\n",
+                String encText = _getEncryptionText(entry->authMode);
+                Serial.printf("%-9s | %-32s | %-16s | %-15s | %4ddB | %s\n",
                     entry->timestamp, entry->ssid, entry->status, 
-                    entry->ip, entry->rssi);
+                    entry->ip, entry->rssi, encText.c_str());
             }
         }
     }
-    Serial.println("==================================\n");
+    Serial.println("=================================================================\n");
 }
 
 void WiFiManagerESP::clearHistory() {
@@ -1339,6 +1879,21 @@ bool WiFiManagerESP::_beginInternal(bool enableAP, uint32_t timeout) {
         return false;
     }
 
+    _initWiFi(enableAP);
+
+    // Tenter de se connecter au meilleur réseau (asynchrone)
+    int bestNetwork = _findBestNetwork();
+    if (bestNetwork < 0) {
+        _connState = ConnectionState::CONN_IDLE;
+        updateStatus();
+        return false;
+    }
+
+    updateStatus();
+    return _startConnection(bestNetwork, timeout);
+}
+
+void WiFiManagerESP::_initWiFi(bool enableAP) {
     _apEnabled = enableAP;
     _setupCallbacks();
 
@@ -1374,18 +1929,10 @@ bool WiFiManagerESP::_beginInternal(bool enableAP, uint32_t timeout) {
 #endif
     }
 
+    // Appliquer l'IP statique éventuelle avant la connexion
+    _applyStaticIP();
+
     _wifiInitialized = true;
-
-    // Tenter de se connecter au meilleur réseau (asynchrone)
-    int bestNetwork = _findBestNetwork();
-    if (bestNetwork < 0) {
-        _connState = ConnectionState::CONN_IDLE;
-        updateStatus();
-        return false;
-    }
-
-    updateStatus();
-    return _startConnection(bestNetwork, timeout);
 }
 
 void WiFiManagerESP::begin(bool enableAP, uint32_t timeout) {
@@ -1431,6 +1978,19 @@ void WiFiManagerESP::begin(const char* ssid, const char* password, bool enableAP
 // ===========================================
 
 void WiFiManagerESP::update() {
+#if defined(ESP32)
+    // Finalisation d'un scan asynchrone (polling natif ESP32)
+    if (_scanAsyncRunning) {
+        int16_t n = WIFI_LIB.scanComplete();
+        if (n >= 0) {
+            _cacheScanResults(n);
+            _scanAsyncRunning = false;
+            WIFI_LIB.scanDelete();
+            Serial.printf("[WiFiManagerESP] Scan async terminé: %d réseau(x)\n", n);
+        }
+    }
+#endif
+
     if (!_wifiInitialized || _networkCount == 0) return;
 
     wl_status_t previousStatus = _currentStatus;
@@ -1444,11 +2004,28 @@ void WiFiManagerESP::update() {
     if (lostLink) {
         Serial.println("[WiFiManagerESP] ⚠️ Connexion perdue détectée!");
         if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
-            _addToHistory(_networks[_currentNetwork].ssid, "❌ Déconnecté", "", 0);
+            _addToHistory(_networks[_currentNetwork].ssid, "❌ Déconnecté", "", 0, 0xFF);
         }
         // Sortir de l'état CONNECTED pour permettre au failover de se déclencher
         if (_connState == ConnectionState::CONN_CONNECTED) {
             _connState = ConnectionState::CONN_IDLE;
+        }
+    }
+
+    // Basculement sur signal trop faible (setMinRSSI), avec hystérésis +5 dBm
+    if (_minRSSI != 0 && _currentStatus == WL_CONNECTED && _networkCount > 1) {
+        int8_t rssi = WIFI_LIB.RSSI();
+        if (!_rssiWeak && rssi < _minRSSI) {
+            _rssiWeak = true;
+            Serial.printf("[WiFiManagerESP] ⚠️ Signal faible (%d dBm < %d) → basculement\n", rssi, _minRSSI);
+            if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
+                _networks[_currentNetwork].failCount = _maxRetries;
+                _networks[_currentNetwork].lastFail = millis();
+            }
+            _connState = ConnectionState::CONN_IDLE;
+            switchToNextNetwork();
+        } else if (_rssiWeak && rssi > (int8_t)(_minRSSI + 5)) {
+            _rssiWeak = false;  // Signal redevenu bon → réarmer la détection
         }
     }
 
@@ -1490,7 +2067,7 @@ void WiFiManagerESP::update() {
 
             if (nextNetwork >= 0) {
                 _lastTriedNetwork = _currentNetwork;  // Mémoriser le réseau qu'on quitte
-                _startConnection(nextNetwork, 15000);
+                _startConnection(nextNetwork, _connectTimeout);
             } else {
                 // Tous en cooldown, reset et recommencer
                 Serial.println("[WiFiManagerESP] Tous les réseaux en cooldown, reset global");
@@ -1499,7 +2076,7 @@ void WiFiManagerESP::update() {
                 }
                 _lastTriedNetwork = -1;  // Reset le dernier essayé
                 Serial.println("[WiFiManagerESP] 🔄 Réessai d'un réseau...");
-                _startConnection(0, 15000);
+                _startConnection(0, _connectTimeout);
             }
         }
     }
@@ -1523,6 +2100,79 @@ void WiFiManagerESP::setCredentials(const char* ssid, const char* password) {
 void WiFiManagerESP::setAPCredentials(const char* ap_ssid, const char* ap_password) {
     _ap_ssid = ap_ssid;
     _ap_password = ap_password;
+}
+
+// ===========================================
+// IMPLÉMENTATION - IP STATIQUE / RADIO
+// ===========================================
+
+void WiFiManagerESP::setStaticIP(IPAddress ip, IPAddress gateway, IPAddress subnet,
+                                 IPAddress dns1, IPAddress dns2) {
+    _staticIP = ip;
+    _staticGateway = gateway;
+    _staticSubnet = subnet;
+    _staticDns1 = dns1;
+    _staticDns2 = dns2;
+    _useStaticIP = true;
+    Serial.printf("[WiFiManagerESP] IP statique: %s\n", ip.toString().c_str());
+    if (_wifiInitialized) {
+        _applyStaticIP();
+    }
+}
+
+void WiFiManagerESP::useDHCP() {
+    _useStaticIP = false;
+    Serial.println("[WiFiManagerESP] Retour en DHCP");
+#if defined(ESP8266)
+    WIFI_LIB.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0));
+#elif defined(ESP32)
+    WIFI_LIB.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+#endif
+    if (_wifiInitialized) {
+        _applyStaticIP();
+    }
+}
+
+void WiFiManagerESP::_applyStaticIP() {
+    if (_useStaticIP) {
+        WIFI_LIB.config(_staticIP, _staticGateway, _staticSubnet, _staticDns1, _staticDns2);
+        Serial.printf("[WiFiManagerESP] Configuration IP statique appliquée: %s\n",
+                      _staticIP.toString().c_str());
+    }
+}
+
+bool WiFiManagerESP::setTxPower(float dBm) {
+#if defined(ESP8266)
+    WIFI_LIB.setOutputPower(dBm);
+    Serial.printf("[WiFiManagerESP] Puissance TX: %.2f dBm\n", dBm);
+    return true;
+#elif defined(ESP32)
+    // Choix du palier wifi_power_t le plus proche (table des valeurs supportées)
+    static const struct { float dbm; wifi_power_t p; } table[] = {
+        { 19.5f, WIFI_POWER_19_5dBm },
+        { 19.0f, WIFI_POWER_19dBm },
+        { 18.5f, WIFI_POWER_18_5dBm },
+        { 17.0f, WIFI_POWER_17dBm },
+        { 15.0f, WIFI_POWER_15dBm },
+        { 13.0f, WIFI_POWER_13dBm },
+        { 11.0f, WIFI_POWER_11dBm },
+        {  8.5f, WIFI_POWER_8_5dBm },
+        {  7.0f, WIFI_POWER_7dBm },
+        {  5.0f, WIFI_POWER_5dBm },
+        {  2.0f, WIFI_POWER_2dBm },
+        { -1.0f, WIFI_POWER_MINUS_1dBm },
+    };
+    wifi_power_t chosen = WIFI_POWER_19_5dBm;
+    float best = 1e9f;
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+        float d = fabsf(dBm - table[i].dbm);
+        if (d < best) { best = d; chosen = table[i].p; }
+    }
+    bool ok = WIFI_LIB.setTxPower(chosen);
+    Serial.printf("[WiFiManagerESP] Puissance TX: %.1f dBm (palier %d) -> %s\n",
+                  dBm, (int)chosen, ok ? "OK" : "échec");
+    return ok;
+#endif
 }
 
 // ===========================================
@@ -1600,6 +2250,131 @@ int WiFiManagerESP::updateStatus() {
     return (int)_currentStatus;
 }
 
+String WiFiManagerESP::scanNetworks() {
+    Serial.println("\n=== SCAN RÉSEAUX WiFi ===");
+
+    _scanResultCount = 0;
+    int n = WIFI_LIB.scanNetworks();
+    String result = "";
+
+    if (n <= 0) {
+        Serial.println("Aucun réseau trouvé");
+        result = "Aucun réseau trouvé";
+    } else {
+        _cacheScanResults(n);
+        Serial.printf("%d réseau(s) trouvé(s)\n", _scanResultCount);
+        for (int i = 0; i < _scanResultCount; ++i) {
+            String ssid = String(_scanResults[i].ssid);
+            int32_t rssi = _scanResults[i].rssi;
+            uint8_t encType = _scanResults[i].encryption;
+
+            String encText = _getEncryptionText(encType);
+
+            // Si ce SSID correspond au réseau actuellement connecté, mettre à jour le cache
+            if (isConnected() && ssid.equals(getSSID())) {
+                _currentAuthMode = encType;
+            }
+
+            String line = String(i + 1) + ": " + ssid + " (" + String(rssi) + " dBm) [" + encText + "]";
+            Serial.println(line);
+            result += line;
+            if (i < _scanResultCount - 1) result += "\n";
+
+            NON_BLOCKING_DELAY(10);
+        }
+    }
+
+    WIFI_LIB.scanDelete();
+    Serial.println("==========================\n");
+    return result;
+}
+
+void WiFiManagerESP::_cacheScanResults(int n) {
+    _scanResultCount = 0;
+    if (n <= 0) return;
+
+    int count = (n < WIFIMANAGER_MAX_SCAN_RESULTS) ? n : WIFIMANAGER_MAX_SCAN_RESULTS;
+    for (int i = 0; i < count; i++) {
+        String s = WIFI_LIB.SSID(i);
+        strncpy(_scanResults[i].ssid, s.c_str(), sizeof(_scanResults[i].ssid) - 1);
+        _scanResults[i].ssid[sizeof(_scanResults[i].ssid) - 1] = '\0';
+        _scanResults[i].rssi = (int8_t)WIFI_LIB.RSSI(i);
+        _scanResults[i].encryption = (uint8_t)WIFI_LIB.encryptionType(i);
+        _scanResults[i].channel = (int8_t)WIFI_LIB.channel(i);
+    }
+    _scanResultCount = count;
+}
+
+bool WiFiManagerESP::scanNetworksAsync() {
+    if (_scanAsyncRunning) {
+        Serial.println("[WiFiManagerESP] Scan déjà en cours");
+        return false;
+    }
+    _scanResultCount = 0;
+
+#if defined(ESP8266)
+    _scanAsyncRunning = true;
+    WIFI_LIB.scanNetworksAsync([this](int n) {
+        this->_cacheScanResults(n);
+        this->_scanAsyncRunning = false;
+        WIFI_LIB.scanDelete();
+        Serial.printf("[WiFiManagerESP] Scan async terminé: %d réseau(x)\n", n);
+    });
+    Serial.println("[WiFiManagerESP] Scan asynchrone lancé");
+    return true;
+#elif defined(ESP32)
+    int16_t r = WIFI_LIB.scanNetworks(true);
+    if (r == WIFI_SCAN_FAILED) {
+        Serial.println("[WiFiManagerESP] ERREUR: Échec du lancement du scan");
+        _scanAsyncRunning = false;
+        return false;
+    }
+    _scanAsyncRunning = true;
+    Serial.println("[WiFiManagerESP] Scan asynchrone lancé");
+    return true;
+#endif
+}
+
+bool WiFiManagerESP::isScanRunning() const {
+    return _scanAsyncRunning;
+}
+
+int WiFiManagerESP::getScanResultCount() const {
+    return _scanResultCount;
+}
+
+String WiFiManagerESP::getScanResultSSID(int index) const {
+    if (index < 0 || index >= _scanResultCount) return String("");
+    return String(_scanResults[index].ssid);
+}
+
+int8_t WiFiManagerESP::getScanResultRSSI(int index) const {
+    if (index < 0 || index >= _scanResultCount) return 0;
+    return _scanResults[index].rssi;
+}
+
+uint8_t WiFiManagerESP::getScanResultEncryption(int index) const {
+    if (index < 0 || index >= _scanResultCount) return 0;
+    return _scanResults[index].encryption;
+}
+
+int8_t WiFiManagerESP::getScanResultChannel(int index) const {
+    if (index < 0 || index >= _scanResultCount) return 0;
+    return _scanResults[index].channel;
+}
+
+int WiFiManagerESP::findNetworkInScan(const char* ssid, int8_t* rssi, uint8_t* encryption) const {
+    if (ssid == nullptr) return -1;
+    for (int i = 0; i < _scanResultCount; i++) {
+        if (strcmp(_scanResults[i].ssid, ssid) == 0) {
+            if (rssi) *rssi = _scanResults[i].rssi;
+            if (encryption) *encryption = _scanResults[i].encryption;
+            return i;
+        }
+    }
+    return -1;
+}
+
 String WiFiManagerESP::Etat_Wifi() {
     String s = "WiFi: ";
     if (isConnected()) {
@@ -1613,6 +2388,7 @@ String WiFiManagerESP::Etat_Wifi() {
         s += "\nRSSI: ";
         s += String(getRSSI());
         s += " dBm 📶";
+        s += "\nChiffrement: " + _getEncryptionText(_currentAuthMode);
     } else {
         s += "❌ non connecté";
     }
@@ -1670,6 +2446,8 @@ void WiFiManagerESP::printStatus(bool detailed) {
 			Serial.print("RSSI: ");
             Serial.print(getRSSI());
             Serial.println(" dBm 📶");
+            Serial.print("Chiffrement: ");
+            Serial.println(_getEncryptionText(_currentAuthMode));
         }
 
         if (_apEnabled) {
@@ -1728,10 +2506,10 @@ void WiFiManagerESP::printStatus(bool detailed) {
 void WiFiManagerESP::reconnect() {
     if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
         Serial.println("[WiFiManagerESP] Reconnexion au réseau actuel...");
-        _startConnection(_currentNetwork, 15000);
+        _startConnection(_currentNetwork, _connectTimeout);
     } else if (_networkCount > 0) {
         Serial.println("[WiFiManagerESP] Reconnexion au premier réseau...");
-        _startConnection(0, 15000);
+        _startConnection(0, _connectTimeout);
     } else {
         Serial.println("[WiFiManagerESP] ERREUR: Aucun réseau configuré");
     }
@@ -1797,6 +2575,68 @@ String WiFiManagerESP::getHostname() {
 #elif defined(ESP32)
     return WIFI_LIB.getHostname();
 #endif
+}
+
+String WiFiManagerESP::getBSSID() {
+    if (!isConnected()) {
+        return String("");
+    }
+    return WIFI_LIB.BSSIDstr();
+}
+
+int32_t WiFiManagerESP::getChannel() {
+    if (!isConnected()) {
+        return 0;
+    }
+    return WIFI_LIB.channel();
+}
+
+String WiFiManagerESP::getSubnetMask() {
+    return WIFI_LIB.subnetMask().toString();
+}
+
+int WiFiManagerESP::getSignalQuality() {
+    if (!isConnected()) {
+        return -1;
+    }
+    int8_t rssi = WIFI_LIB.RSSI();
+    // Mapping simple : -50 dBm ou mieux -> 100 %, -100 dBm ou pire -> 0 %
+    if (rssi <= -100) return 0;
+    if (rssi >= -50) return 100;
+    return (int)(2 * (rssi + 100));
+}
+
+int WiFiManagerESP::getLastDisconnectReason() {
+    return _lastDisconnectReason;
+}
+
+String WiFiManagerESP::getLastDisconnectReasonText() {
+#if defined(ESP32)
+    return String(WIFI_LIB.disconnectReasonName((wifi_err_reason_t)_lastDisconnectReason));
+#elif defined(ESP8266)
+    switch (_lastDisconnectReason) {
+        case 1:   return "UNSPECIFIED";
+        case 2:   return "AUTH_EXPIRE";
+        case 3:   return "AUTH_LEAVE";
+        case 4:   return "ASSOC_EXPIRE";
+        case 5:   return "ASSOC_TOOMANY";
+        case 6:   return "NOT_AUTHED";
+        case 7:   return "NOT_ASSOCED";
+        case 8:   return "ASSOC_LEAVE";
+        case 9:   return "ASSOC_NOT_AUTHED";
+        case 15:  return "4WAY_HANDSHAKE_TIMEOUT";
+        case 200: return "BEACON_TIMEOUT";
+        case 201: return "NO_AP_FOUND";
+        case 202: return "AUTH_FAIL";
+        case 203: return "ASSOC_FAIL";
+        case 204: return "HANDSHAKE_TIMEOUT";
+        default:  return String("Code ") + String(_lastDisconnectReason);
+    }
+#endif
+}
+
+int WiFiManagerESP::getAPClientCount() {
+    return WIFI_LIB.softAPgetStationNum();
 }
 
 // ===========================================
@@ -1871,6 +2711,7 @@ void WiFiManagerESP::_setupCallbacksESP8266() {
 
     // Callback pour déconnexion - NE PAS reconnecter auto si multi-réseaux
     WiFi.onStationModeDisconnected([this](const WiFiEventStationModeDisconnected& evt) {
+        this->_lastDisconnectReason = (int)evt.reason;
         Serial.print("[WiFiManagerESP] Déconnecté! Raison: ");
         Serial.println(evt.reason);
         this->updateStatus();
@@ -1902,6 +2743,7 @@ void WiFiManagerESP::_WiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
             break;
 
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+            _lastDisconnectReason = (int)info.wifi_sta_disconnected.reason;
             Serial.print("[WiFiManagerESP] Déconnecté! Raison: ");
             Serial.println(info.wifi_sta_disconnected.reason);
             updateStatus();
@@ -1925,5 +2767,408 @@ void WiFiManagerESP::_WiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
     }
 }
 #endif
+
+// ===========================================
+// IMPLÉMENTATION - IDENTIFIANTS / ALÉATOIRE
+// ===========================================
+
+uint32_t WiFiManagerESP::_chipId() {
+#if defined(ESP8266)
+    return ESP.getChipId();
+#elif defined(ESP32)
+    return (uint32_t)(ESP.getEfuseMac() & 0xFFFFFFFFULL);
+#endif
+}
+
+uint32_t WiFiManagerESP::_random32() {
+#if defined(ESP8266)
+    return (uint32_t)RANDOM_REG32;
+#elif defined(ESP32)
+    return esp_random();
+#endif
+}
+
+// ===========================================
+// CRYPTO EMBARQUÉ (AES-128-CBC + SHA-256)
+// ===========================================
+
+static const uint8_t wm_aes_sbox[256] = {
+    0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
+    0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
+    0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
+    0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
+    0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
+    0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
+    0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
+    0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
+    0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
+    0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
+    0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
+    0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
+    0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
+    0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
+    0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
+    0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
+};
+
+static const uint8_t wm_aes_rsbox[256] = {
+    0x52,0x09,0x6a,0xd5,0x30,0x36,0xa5,0x38,0xbf,0x40,0xa3,0x9e,0x81,0xf3,0xd7,0xfb,
+    0x7c,0xe3,0x39,0x82,0x9b,0x2f,0xff,0x87,0x34,0x8e,0x43,0x44,0xc4,0xde,0xe9,0xcb,
+    0x54,0x7b,0x94,0x32,0xa6,0xc2,0x23,0x3d,0xee,0x4c,0x95,0x0b,0x42,0xfa,0xc3,0x4e,
+    0x08,0x2e,0xa1,0x66,0x28,0xd9,0x24,0xb2,0x76,0x5b,0xa2,0x49,0x6d,0x8b,0xd1,0x25,
+    0x72,0xf8,0xf6,0x64,0x86,0x68,0x98,0x16,0xd4,0xa4,0x5c,0xcc,0x5d,0x65,0xb6,0x92,
+    0x6c,0x70,0x48,0x50,0xfd,0xed,0xb9,0xda,0x5e,0x15,0x46,0x57,0xa7,0x8d,0x9d,0x84,
+    0x90,0xd8,0xab,0x00,0x8c,0xbc,0xd3,0x0a,0xf7,0xe4,0x58,0x05,0xb8,0xb3,0x45,0x06,
+    0xd0,0x2c,0x1e,0x8f,0xca,0x3f,0x0f,0x02,0xc1,0xaf,0xbd,0x03,0x01,0x13,0x8a,0x6b,
+    0x3a,0x91,0x11,0x41,0x4f,0x67,0xdc,0xea,0x97,0xf2,0xcf,0xce,0xf0,0xb4,0xe6,0x73,
+    0x96,0xac,0x74,0x22,0xe7,0xad,0x35,0x85,0xe2,0xf9,0x37,0xe8,0x1c,0x75,0xdf,0x6e,
+    0x47,0xf1,0x1a,0x71,0x1d,0x29,0xc5,0x89,0x6f,0xb7,0x62,0x0e,0xaa,0x18,0xbe,0x1b,
+    0xfc,0x56,0x3e,0x4b,0xc6,0xd2,0x79,0x20,0x9a,0xdb,0xc0,0xfe,0x78,0xcd,0x5a,0xf4,
+    0x1f,0xdd,0xa8,0x33,0x88,0x07,0xc7,0x31,0xb1,0x12,0x10,0x59,0x27,0x80,0xec,0x5f,
+    0x60,0x51,0x7f,0xa9,0x19,0xb5,0x4a,0x0d,0x2d,0xe5,0x7a,0x9f,0x93,0xc9,0x9c,0xef,
+    0xa0,0xe0,0x3b,0x4d,0xae,0x2a,0xf5,0xb0,0xc8,0xeb,0xbb,0x3c,0x83,0x53,0x99,0x61,
+    0x17,0x2b,0x04,0x7e,0xba,0x77,0xd6,0x26,0xe1,0x69,0x14,0x63,0x55,0x21,0x0c,0x7d
+};
+
+static uint8_t wm_xtime(uint8_t x) { return (uint8_t)((x << 1) ^ ((x >> 7) * 0x1b)); }
+
+static uint8_t wm_gmul(uint8_t x, uint8_t y) {
+    uint8_t r = 0;
+    while (y) {
+        if (y & 1) r ^= x;
+        x = wm_xtime(x);
+        y >>= 1;
+    }
+    return r;
+}
+
+static void wm_aes128_expand(const uint8_t* key, uint8_t* rk) {
+    static const uint8_t rcon[11] = {0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36};
+    memcpy(rk, key, 16);
+    for (int i = 16; i < 176; i += 4) {
+        uint8_t t[4] = { rk[i-4], rk[i-3], rk[i-2], rk[i-1] };
+        if (i % 16 == 0) {
+            uint8_t tmp = t[0];
+            t[0] = wm_aes_sbox[t[1]] ^ rcon[i / 16];
+            t[1] = wm_aes_sbox[t[2]];
+            t[2] = wm_aes_sbox[t[3]];
+            t[3] = wm_aes_sbox[tmp];
+        }
+        rk[i]   = rk[i-16] ^ t[0];
+        rk[i+1] = rk[i-15] ^ t[1];
+        rk[i+2] = rk[i-14] ^ t[2];
+        rk[i+3] = rk[i-13] ^ t[3];
+    }
+}
+
+static void wm_aes_add_rk(uint8_t* s, const uint8_t* rk) {
+    for (int i = 0; i < 16; i++) s[i] ^= rk[i];
+}
+
+static void wm_aes_sub(uint8_t* s) {
+    for (int i = 0; i < 16; i++) s[i] = wm_aes_sbox[s[i]];
+}
+
+static void wm_aes_inv_sub(uint8_t* s) {
+    for (int i = 0; i < 16; i++) s[i] = wm_aes_rsbox[s[i]];
+}
+
+static void wm_aes_shift_rows(uint8_t* s) {
+    uint8_t t;
+    t = s[1]; s[1] = s[5]; s[5] = s[9]; s[9] = s[13]; s[13] = t;
+    t = s[2]; s[2] = s[10]; s[10] = t; t = s[6]; s[6] = s[14]; s[14] = t;
+    t = s[15]; s[15] = s[11]; s[11] = s[7]; s[7] = s[3]; s[3] = t;
+}
+
+static void wm_aes_inv_shift_rows(uint8_t* s) {
+    uint8_t t;
+    t = s[13]; s[13] = s[9]; s[9] = s[5]; s[5] = s[1]; s[1] = t;
+    t = s[2]; s[2] = s[10]; s[10] = t; t = s[6]; s[6] = s[14]; s[14] = t;
+    t = s[3]; s[3] = s[7]; s[7] = s[11]; s[11] = s[15]; s[15] = t;
+}
+
+static void wm_aes_mix_columns(uint8_t* s) {
+    for (int c = 0; c < 4; c++) {
+        uint8_t* col = &s[c * 4];
+        uint8_t a = col[0], b = col[1], cc = col[2], d = col[3];
+        uint8_t t = a ^ b ^ cc ^ d;
+        col[0] ^= t ^ wm_xtime(a ^ b);
+        col[1] ^= t ^ wm_xtime(b ^ cc);
+        col[2] ^= t ^ wm_xtime(cc ^ d);
+        col[3] ^= t ^ wm_xtime(d ^ a);
+    }
+}
+
+static void wm_aes_inv_mix_columns(uint8_t* s) {
+    for (int c = 0; c < 4; c++) {
+        uint8_t* col = &s[c * 4];
+        uint8_t a = col[0], b = col[1], cc = col[2], d = col[3];
+        col[0] = wm_gmul(a,14) ^ wm_gmul(b,11) ^ wm_gmul(cc,13) ^ wm_gmul(d,9);
+        col[1] = wm_gmul(a,9)  ^ wm_gmul(b,14) ^ wm_gmul(cc,11) ^ wm_gmul(d,13);
+        col[2] = wm_gmul(a,13) ^ wm_gmul(b,9)  ^ wm_gmul(cc,14) ^ wm_gmul(d,11);
+        col[3] = wm_gmul(a,11) ^ wm_gmul(b,13) ^ wm_gmul(cc,9)  ^ wm_gmul(d,14);
+    }
+}
+
+static void wm_aes128_encrypt_block(const uint8_t* rk, const uint8_t* in, uint8_t* out) {
+    uint8_t s[16];
+    memcpy(s, in, 16);
+    wm_aes_add_rk(s, rk);
+    for (int r = 1; r < 10; r++) {
+        wm_aes_sub(s);
+        wm_aes_shift_rows(s);
+        wm_aes_mix_columns(s);
+        wm_aes_add_rk(s, rk + 16 * r);
+    }
+    wm_aes_sub(s);
+    wm_aes_shift_rows(s);
+    wm_aes_add_rk(s, rk + 160);
+    memcpy(out, s, 16);
+}
+
+static void wm_aes128_decrypt_block(const uint8_t* rk, const uint8_t* in, uint8_t* out) {
+    uint8_t s[16];
+    memcpy(s, in, 16);
+    wm_aes_add_rk(s, rk + 160);
+    for (int r = 9; r >= 1; r--) {
+        wm_aes_inv_shift_rows(s);
+        wm_aes_inv_sub(s);
+        wm_aes_add_rk(s, rk + 16 * r);
+        wm_aes_inv_mix_columns(s);
+    }
+    wm_aes_inv_shift_rows(s);
+    wm_aes_inv_sub(s);
+    wm_aes_add_rk(s, rk);
+    memcpy(out, s, 16);
+}
+
+static void wm_aes128_cbc_encrypt(const uint8_t* rk, const uint8_t iv_in[16],
+                                  const uint8_t* data, size_t len, uint8_t* out) {
+    uint8_t iv[16];
+    memcpy(iv, iv_in, 16);
+    for (size_t o = 0; o < len; o += 16) {
+        uint8_t blk[16];
+        for (int i = 0; i < 16; i++) blk[i] = data[o + i] ^ iv[i];
+        wm_aes128_encrypt_block(rk, blk, out + o);
+        memcpy(iv, out + o, 16);
+    }
+}
+
+static void wm_aes128_cbc_decrypt(const uint8_t* rk, const uint8_t iv_in[16],
+                                  const uint8_t* data, size_t len, uint8_t* out) {
+    uint8_t iv[16];
+    memcpy(iv, iv_in, 16);
+    for (size_t o = 0; o < len; o += 16) {
+        uint8_t blk[16];
+        wm_aes128_decrypt_block(rk, data + o, blk);
+        for (int i = 0; i < 16; i++) out[o + i] = blk[i] ^ iv[i];
+        memcpy(iv, data + o, 16);
+    }
+}
+
+static uint32_t wm_rotr(uint32_t x, uint32_t n) { return (x >> n) | (x << (32 - n)); }
+
+static void wm_sha256(const uint8_t* data, size_t len, uint8_t out[32]) {
+    static const uint32_t K[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+    uint32_t h[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+    uint64_t blen = (uint64_t)len * 8;
+
+    size_t padlen = ((len + 1 + 8 + 63) / 64) * 64;
+    uint8_t* msg = (uint8_t*)malloc(padlen);
+    if (!msg) return;
+    memcpy(msg, data, len);
+    msg[len] = 0x80;
+    for (size_t i = len + 1; i < padlen - 8; i++) msg[i] = 0;
+    for (int i = 0; i < 8; i++) msg[padlen - 1 - i] = (uint8_t)(blen >> (8 * i));
+
+    for (size_t off = 0; off < padlen; off += 64) {
+        uint32_t w[64];
+        for (int i = 0; i < 16; i++) {
+            w[i] = ((uint32_t)msg[off + i*4] << 24) | ((uint32_t)msg[off + i*4 + 1] << 16) |
+                   ((uint32_t)msg[off + i*4 + 2] << 8) | (uint32_t)msg[off + i*4 + 3];
+        }
+        for (int i = 16; i < 64; i++) {
+            uint32_t s0 = wm_rotr(w[i-15],7) ^ wm_rotr(w[i-15],18) ^ (w[i-15] >> 3);
+            uint32_t s1 = wm_rotr(w[i-2],17) ^ wm_rotr(w[i-2],19) ^ (w[i-2] >> 10);
+            w[i] = w[i-16] + s0 + w[i-7] + s1;
+        }
+        uint32_t a=h[0],b=h[1],c=h[2],d=h[3],e=h[4],f=h[5],g=h[6],hh=h[7];
+        for (int i = 0; i < 64; i++) {
+            uint32_t S1 = wm_rotr(e,6) ^ wm_rotr(e,11) ^ wm_rotr(e,25);
+            uint32_t ch = (e & f) ^ ((~e) & g);
+            uint32_t t1 = hh + S1 + ch + K[i] + w[i];
+            uint32_t S0 = wm_rotr(a,2) ^ wm_rotr(a,13) ^ wm_rotr(a,22);
+            uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            uint32_t t2 = S0 + maj;
+            hh=g; g=f; f=e; e=d+t1; d=c; c=b; b=a; a=t1+t2;
+        }
+        h[0]+=a; h[1]+=b; h[2]+=c; h[3]+=d; h[4]+=e; h[5]+=f; h[6]+=g; h[7]+=hh;
+    }
+    free(msg);
+    for (int i = 0; i < 8; i++) {
+        out[i*4]   = (uint8_t)(h[i] >> 24);
+        out[i*4+1] = (uint8_t)(h[i] >> 16);
+        out[i*4+2] = (uint8_t)(h[i] >> 8);
+        out[i*4+3] = (uint8_t)(h[i]);
+    }
+}
+
+// ===========================================
+// IMPLÉMENTATION - PERSISTANCE (EEPROM CHIFFRÉE)
+// ===========================================
+
+void WiFiManagerESP::_deriveStorageKey(uint8_t out[16]) const {
+    const char salt[16] = { 'W','M','E','S','-','p','e','r','s','i','s','t','-','v','1','!' };
+    uint8_t buf[64];
+    size_t n = 0;
+    memcpy(buf, salt, 16); n = 16;
+    uint32_t id = _chipId();
+    buf[n++] = (uint8_t)(id);
+    buf[n++] = (uint8_t)(id >> 8);
+    buf[n++] = (uint8_t)(id >> 16);
+    buf[n++] = (uint8_t)(id >> 24);
+    size_t kl = strlen(_storageKey);
+    if (kl > 32) kl = 32;
+    memcpy(buf + n, _storageKey, kl); n += kl;
+
+    uint8_t hash[32];
+    wm_sha256(buf, n, hash);
+    memcpy(out, hash, 16);
+}
+
+void WiFiManagerESP::setStorageKey(const char* key) {
+    if (key != nullptr) {
+        strncpy(_storageKey, key, sizeof(_storageKey) - 1);
+        _storageKey[sizeof(_storageKey) - 1] = '\0';
+        Serial.println("[WiFiManagerESP] Clé de persistance définie");
+    } else {
+        _storageKey[0] = '\0';
+        Serial.println("[WiFiManagerESP] Clé de persistance effacée");
+    }
+}
+
+bool WiFiManagerESP::saveNetworks() {
+    uint8_t key[16];
+    _deriveStorageKey(key);
+    uint8_t rk[176];
+    wm_aes128_expand(key, rk);
+
+    uint8_t buf[WIFIMANAGER_EEPROM_SIZE];
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 'W'; buf[1] = 'M'; buf[2] = 'E'; buf[3] = 'S';
+    buf[4] = WIFIMANAGER_STORAGE_VERSION;
+
+    size_t off = 8;
+    int stored = 0;
+    for (int i = 0; i < _networkCount; i++) {
+        uint8_t iv[16];
+        for (int k = 0; k < 4; k++) {
+            uint32_t r = _random32();
+            memcpy(iv + k * 4, &r, 4);
+        }
+        uint8_t ssidBuf[48];
+        memset(ssidBuf, 0, sizeof(ssidBuf));
+        strncpy((char*)ssidBuf, _networks[i].ssid, 32);
+        uint8_t passBuf[64];
+        memset(passBuf, 0, sizeof(passBuf));
+        strncpy((char*)passBuf, _networks[i].password, 63);
+
+        uint8_t ssidCt[48];
+        uint8_t passCt[64];
+        wm_aes128_cbc_encrypt(rk, iv, ssidBuf, 48, ssidCt);
+        wm_aes128_cbc_encrypt(rk, iv, passBuf, 64, passCt);
+
+        if (off + 48 + 64 + 16 + 1 > sizeof(buf)) {
+            Serial.println("[WiFiManagerESP] ⚠️ EEPROM pleine : réseaux tronqués");
+            break;
+        }
+        memcpy(buf + off, ssidCt, 48); off += 48;
+        memcpy(buf + off, passCt, 64); off += 64;
+        memcpy(buf + off, iv, 16); off += 16;
+        buf[off++] = (uint8_t)(_networks[i].priority & 0xff);
+        stored++;
+    }
+    buf[5] = (uint8_t)stored;
+
+    EEPROM.begin(WIFIMANAGER_EEPROM_SIZE);
+    for (size_t i = 0; i < sizeof(buf); i++) EEPROM.write((int)i, buf[i]);
+    bool ok = EEPROM.commit();
+    EEPROM.end();
+
+    Serial.printf("[WiFiManagerESP] %d réseau(x) sauvegardé(s) en EEPROM (%s)\n",
+                  stored, ok ? "OK" : "échec");
+    return ok;
+}
+
+bool WiFiManagerESP::loadNetworks() {
+    EEPROM.begin(WIFIMANAGER_EEPROM_SIZE);
+    bool valid = (EEPROM.read(0) == 'W' && EEPROM.read(1) == 'M' &&
+                  EEPROM.read(2) == 'E' && EEPROM.read(3) == 'S' &&
+                  EEPROM.read(4) == WIFIMANAGER_STORAGE_VERSION);
+    uint8_t count = EEPROM.read(5);
+
+    if (!valid) {
+        EEPROM.end();
+        Serial.println("[WiFiManagerESP] Aucune donnée de persistance valide");
+        return false;
+    }
+
+    uint8_t key[16];
+    _deriveStorageKey(key);
+    uint8_t rk[176];
+    wm_aes128_expand(key, rk);
+
+    size_t off = 8;
+    int loaded = 0;
+    int maxLoad = (count < WIFIMANAGER_MAX_NETWORKS) ? count : WIFIMANAGER_MAX_NETWORKS;
+
+    for (int i = 0; i < maxLoad; i++) {
+        uint8_t ssidCt[48], passCt[64], iv[16];
+        for (int k = 0; k < 48; k++) { ssidCt[k] = EEPROM.read((int)(off + k)); }
+        off += 48;
+        for (int k = 0; k < 64; k++) { passCt[k] = EEPROM.read((int)(off + k)); }
+        off += 64;
+        for (int k = 0; k < 16; k++) { iv[k] = EEPROM.read((int)(off + k)); }
+        off += 16;
+        uint8_t prio = EEPROM.read((int)off);
+        off += 1;
+
+        uint8_t ssidBuf[48], passBuf[64];
+        wm_aes128_cbc_decrypt(rk, iv, ssidCt, 48, ssidBuf);
+        wm_aes128_cbc_decrypt(rk, iv, passCt, 64, passBuf);
+        ssidBuf[47] = '\0';
+        passBuf[63] = '\0';
+
+        if (addNetwork((const char*)ssidBuf, (const char*)passBuf, (int)prio)) loaded++;
+    }
+
+    EEPROM.end();
+    Serial.printf("[WiFiManagerESP] %d réseau(x) chargé(s) depuis l'EEPROM\n", loaded);
+    return loaded > 0;
+}
+
+bool WiFiManagerESP::factoryReset() {
+    clearNetworks();
+    EEPROM.begin(WIFIMANAGER_EEPROM_SIZE);
+    for (size_t i = 0; i < WIFIMANAGER_EEPROM_SIZE; i++) EEPROM.write((int)i, 0);
+    bool ok = EEPROM.commit();
+    EEPROM.end();
+    WIFI_LIB.disconnect(true);
+    _connState = ConnectionState::CONN_IDLE;
+    _connTargetIndex = -1;
+    _currentAuthMode = 0xFF;
+    _lastTriedNetwork = -1;
+    Serial.println("[WiFiManagerESP] Factory reset: réseaux et EEPROM effacés");
+    return ok;
+}
 
 #endif // WIFIMANAGER_ESP_H

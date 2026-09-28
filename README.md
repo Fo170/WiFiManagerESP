@@ -7,7 +7,7 @@
 
 Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32 : mode point d'accès (AP), **connexion non-bloquante (machine à états)**, **gestion multi-réseaux avec basculement automatique (failover)**, reconnexion automatique native du stack WiFi, historique des connexions et mDNS.
 
-Version 0.7.9
+Version 0.9.0
 
 ## ✨ Fonctionnalités
 
@@ -15,7 +15,13 @@ Version 0.7.9
 - ✅ **Connexion WiFi multi-réseaux avec basculement automatique (failover)**
 - ✅ **Connexion non-bloquante (machine à états)** : `update()` pilote la tentative, le timeout et le failover sans jamais bloquer le `loop()`
 - ✅ **Démarrage asynchrone** : `beginAsync()` + `waitForConnection()` pour lancer et attendre sans geler le code applicatif
-- ✅ **Historique des connexions avec timestamps**
+- ✅ **Provisionnement à chaud** : `connectToNetwork()`, `removeNetwork()`, `updateNetwork()`
+- ✅ **Scan WiFi** bloquant (`scanNetworks()`) ou asynchrone (`scanNetworksAsync()`) + cache de résultats
+- ✅ **Diagnostics** : BSSID, canal, masque, qualité du signal, raison de déconnexion, clients AP
+- ✅ **Bascule sur signal faible** (`setMinRSSI`, hystérésis) et timeout de connexion configurable
+- ✅ **IP statique** (`setStaticIP()` / `useDHCP()`) et puissance TX (`setTxPower()`)
+- ✅ **Persistance EEPROM chiffrée AES-128** (`saveNetworks()` / `loadNetworks()`)
+- ✅ **Historique des connexions avec timestamps et type de chiffrement**
 - ✅ **Priorisation des réseaux (ordre de tentative configurable)**
 - ✅ Reconnexion automatique intelligente (pas de conflit avec multi-réseaux)
 - ✅ **Reconnexion automatique native du stack WiFi** (`setAutoReconnect`) pour absorber les coupures brèves
@@ -40,7 +46,7 @@ platform = espressif32
 board = esp32dev
 framework = arduino
 lib_deps = 
-    https://github.com/Fo170/WiFiManagerESP.git@^0.7.9
+    https://github.com/Fo170/WiFiManagerESP.git@^0.9.0
 ```
 
 > **Dépendance requise** : la bibliothèque `NON_BLOCKING_DELAY` est utilisée pour les délais non bloquants.
@@ -54,6 +60,11 @@ lib_deps =
 
 ```cpp
 bool addNetwork(const char* ssid, const char* password, int priority = 0)
+bool connectToNetwork(const char* ssid, const char* password = "", int priority = 0)  // Ajout + connexion non-bloquante
+bool removeNetwork(int index)
+bool updateNetwork(int index, const char* ssid, const char* password, int priority = 0)
+bool hasNetwork(const char* ssid)
+int indexOfNetwork(const char* ssid)
 void clearNetworks()
 int getNetworkCount()
 int getCurrentNetworkIndex()
@@ -63,6 +74,11 @@ bool switchToNextNetwork()
 bool switchToNetwork(int index)
 ```
 
+> **Provisionnement à chaud** : `connectToNetwork()` ajoute le réseau puis lance immédiatement
+> sa connexion (non-bloquante, pilotée par `update()`). Utilisable au démarrage avec **zéro réseau
+> configuré** — il initialise la pile WiFi si nécessaire. Échoue si la liste est pleine
+> (`WIFIMANAGER_MAX_NETWORKS`). Voir `scanNetworks()` pour lister les réseaux disponibles.
+
 ### Configuration du basculement automatique
 
 ```cpp
@@ -71,6 +87,8 @@ void setAutoReconnect(bool enable)   // Reconnexion native du stack WiFi (défau
 void setMaxRetries(int retries)
 void setRetryDelay(unsigned long ms)
 void setFailCooldown(unsigned long ms)
+void setConnectTimeout(uint32_t ms)  // Timeout d'une tentative (défaut: 15000)
+void setMinRSSI(int8_t dbm)          // Bascule si signal < seuil (0 = désactivé, hystérésis +5 dBm)
 ```
 
 > **Reconnexion automatique native** : `setAutoReconnect(true)` (défaut) laisse le stack WiFi
@@ -103,7 +121,52 @@ int8_t getRSSI()
 String getHostname()
 String getStatusText()
 wl_status_t getStatus()
+String scanNetworks()   // Scanne les réseaux (SSID, RSSI, chiffrement) — retourne la liste formatée
+String Etat_Wifi()      // Résumé de l'état WiFi (dont le type de chiffrement) dans une String
+String getBSSID()       // MAC de l'AP connecté
+int32_t getChannel()    // Canal radio
+String getSubnetMask()
+int getSignalQuality()  // Qualité 0-100 % (depuis le RSSI)
+int getLastDisconnectReason()
+String getLastDisconnectReasonText()
+int getAPClientCount()
 ```
+
+### Scan asynchrone + résultats
+
+```cpp
+bool scanNetworksAsync()               // Scan non-bloquant (piloté par update())
+bool isScanRunning()
+int getScanResultCount()               // WIFIMANAGER_MAX_SCAN_RESULTS max (défaut: 12)
+String getScanResultSSID(int index)
+int8_t getScanResultRSSI(int index)
+uint8_t getScanResultEncryption(int index)
+int8_t getScanResultChannel(int index)
+int findNetworkInScan(const char* ssid, int8_t* rssi = nullptr, uint8_t* encryption = nullptr)
+```
+
+### Adresse IP statique / radio
+
+```cpp
+void setStaticIP(IPAddress ip, IPAddress gateway, IPAddress subnet,
+                 IPAddress dns1 = (uint32_t)0, IPAddress dns2 = (uint32_t)0)
+void useDHCP()
+bool setTxPower(float dBm)   // ESP8266 continu ; ESP32 palier le plus proche
+```
+
+### Persistance EEPROM (chiffrée AES-128)
+
+```cpp
+void setStorageKey(const char* key)   // Clé utilisateur (clé finale = SHA256(salt + chipId + key))
+bool saveNetworks()                   // Sauvegarde les réseaux (SSID + mot de passe chiffrés)
+bool loadNetworks()                   // Charge les réseaux depuis l'EEPROM
+bool factoryReset()                   // Efface réseaux + EEPROM
+```
+
+> **Sécurité** : les SSID et mots de passe sont chiffrés en **AES-128-CBC**, la clé étant dérivée
+> du chip et d'une clé utilisateur optionnelle (`setStorageKey`). Sans secure element, cela protège
+> contre la lecture en clair de l'EEPROM (dump) mais pas contre un attaquant disposant du firmware
+> et de la puce.
 
 ### Gestion de la connexion
 
@@ -275,6 +338,57 @@ void loop() {
 > }
 > ```
 
+### Exemple provisionnement à chaud + diagnostics + persistance (v0.9.0)
+
+```cpp
+#include <WiFiManagerESP.h>
+
+WiFiManagerESP wifi;
+bool scanDone = false;
+
+void setup() {
+    Serial.begin(115200);
+
+    // Reprise des réseaux sauvegardés (chiffrés) au démarrage
+    wifi.setStorageKey("ma_cle_secrete");
+    if (wifi.loadNetworks()) {
+        wifi.beginAsync(false, 15000);
+    } else {
+        // Aucun réseau connu : on scanne pour en ajouter un à chaud
+        wifi.scanNetworksAsync();
+    }
+
+    // Seuils et diagnostics
+    wifi.setMinRSSI(-80);          // bascule si signal trop faible (hystérésis +5 dBm)
+    wifi.setConnectTimeout(12000);
+}
+
+void loop() {
+    wifi.update();
+
+    // Exploitation du scan asynchrone
+    if (!scanDone && !wifi.isScanRunning()) {
+        scanDone = true;
+        for (int i = 0; i < wifi.getScanResultCount(); i++) {
+            Serial.printf("%s (%d dBm) canal %d\n",
+                wifi.getScanResultSSID(i).c_str(),
+                wifi.getScanResultRSSI(i),
+                wifi.getScanResultChannel(i));
+        }
+        // Ajouter + connecter un réseau trouvé, puis persister
+        wifi.connectToNetwork("Mon_Reseau", "MotDePasse", 0);
+        wifi.saveNetworks();
+    }
+
+    if (wifi.isConnected()) {
+        Serial.printf("Qualité: %d%% | BSSID: %s | Canal: %d\n",
+            wifi.getSignalQuality(), wifi.getBSSID().c_str(), wifi.getChannel());
+    }
+
+    NON_BLOCKING_DELAY(100);
+}
+```
+
 ## 🎯 Exemple mDNS
 
 ```cpp
@@ -393,6 +507,8 @@ Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou un
 
 | Version |   Date  | Changements |
 |---------|---------|-------------|
+| **v0.9.0** | 2026-09	| **Diagnostics** : `getBSSID()`, `getChannel()`, `getSubnetMask()`, `getSignalQuality()`, `getLastDisconnectReason()`/`…Text()`, `getAPClientCount()`. **Robustesse** : `setConnectTimeout()`, `setMinRSSI()` (bascule sur signal faible avec hystérésis +5 dBm), `hasNetwork()`, `indexOfNetwork()`, `updateNetwork()`, `removeMDNSService()`. **Scan non bloquant** : `scanNetworksAsync()` + cache de résultats (12 max) et accesseurs `getScanResult*()` / `findNetworkInScan()`. **IP statique** : `setStaticIP()` / `useDHCP()`. **Radio** : `setTxPower()`. **Persistance EEPROM chiffrée** : AES-128-CBC + SHA-256 embarqués (sans dépendance), clé dérivée du chip + clé utilisateur (`setStorageKey()`), `saveNetworks()` / `loadNetworks()` / `factoryReset()`. |
+| **v0.8.0** | 2026-09	| **Optimisation mémoire** : réduction des constantes par défaut pour limiter l'empreinte RAM — `WIFIMANAGER_MAX_HISTORY` 20→8, `WIFIMANAGER_MAX_NETWORKS` 10→3, `WIFIMANAGER_MAX_MDNS_SERVICES` 5→2. **Chiffrement WiFi** : nouvelle méthode `scanNetworks()` (scan bloquant + affichage SSID/RSSI/chiffrement + retour String) ; affichage du type de chiffrement dans `printStatus()`, `Etat_Wifi()` et `printHistory()` (nouvelle colonne) ; mise en cache du chiffrement du réseau connecté (ESP32 via `esp_wifi_sta_get_ap_info()`, ESP8266 renseigné par `scanNetworks()`) ; helper `_getEncryptionText()` multi-plateforme. **Provisionnement à chaud** : `connectToNetwork()` (ajout + connexion ciblée non-bloquante, utilisable sans réseau configuré), `removeNetwork(index)` ; les SSID/mots de passe sont désormais **copiés** dans la classe (ajout dynamique sûr). |
 | **v0.7.9** | 2026-08	| **Intégration ESP-NOW** : hooks applicatifs `onWiFiConnected()` / `onWiFiDisconnected()` (appelés à chaque connexion réussie / échec — pour ré-armer un stack dépendant du WiFi, ex. `esv.rearm()` + `esv.rearmPeers()`) ; **coupe le power-save WiFi après connexion** (`setPowerSaveOff(true)` par défaut → `WiFi.setSleep(false)` ESP32 / `WIFI_NONE_SLEEP` ESP8266) car le modem sleep fait manquer des trames ESP-NOW entrantes (~25-30 % de perte) ; compteur de réinitialisations WiFi `getResetCount()` / `getLastResetTime()` + log `🔄 reset WiFi #n` dans `_resetWiFi()` (chaque reset efface le stack ESP-NOW). |
 | **v0.7.8** | 2026-08	| Remplacement des `delay()` bloquants par la librairie non-bloquante `NON_BLOCKING_DELAY` (vTaskDelay sur ESP32, busy-wait + yield sur ESP8266) ; dépendance déclarée dans `library.json` ; bump des exemples. **Connexion refactorisée en machine à états non-bloquante** : `begin()` conservé bloquant (compatibilité), ajout de `beginAsync()` et `waitForConnection()`, `update()` pilote la tentative et le failover sans jamais bloquer (fin du freeze de 10-15 s), `switchToNetwork()`/`switchToNextNetwork()`/`reconnect()` retournent désormais `true` si la tentative a été lancée. **Corrections de bugs** : reconnexion automatique rétablie après perte de lien (l'état restait bloqué sur `CONNECTED` et le failover ne se déclenchait plus) ; failover immédiat sur `WL_CONNECT_FAILED` (ex. mot de passe erroné) sans attendre le timeout complet. Ajout de `setAutoReconnect()` (défaut activé) : le stack WiFi retente lui-même le réseau courant sur coupures brèves, la bibliothèque ne fail-over que si la coupure persiste. |
 | **v0.7.7** | 2026-06	| lastTriedNetwork est déclarée en static localement dans update(), mais elle n'est pas un membre de la classe. Si on veut la rendre réellement utilisable et persistante entre les appels, il faut la déclarer comme variable membre privée en _lastTriedNetwork. |

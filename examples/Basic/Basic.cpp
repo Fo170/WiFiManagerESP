@@ -17,6 +17,10 @@ void setup() {
 
   if (wifiManager.isConnected()) {
     Serial.println("Connecté avec succès !");
+    // Diagnostics (v0.9.0)
+    Serial.printf("Qualité: %d%% | Canal: %d | BSSID: %s\n",
+                  wifiManager.getSignalQuality(), wifiManager.getChannel(),
+                  wifiManager.getBSSID().c_str());
     wifiManager.printStatus(true);
   }
 }

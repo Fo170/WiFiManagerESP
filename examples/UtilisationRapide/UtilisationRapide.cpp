@@ -1,6 +1,6 @@
 // ===========================================
 // Exemple d'utilisation rapide - main.cpp
-// Multi-Réseaux + mDNS
+// Multi-Réseaux + mDNS + Scan + Diagnostics + Persistance (v0.9.0)
 // ===========================================
 #include <Arduino.h>
 
@@ -52,6 +52,46 @@ void setup() {
   // } else {
   //   Serial.println("Timeout : le failover continue dans loop()");
   // }
+
+  // --- Méthode 6: Provisionnement à chaud, sans réseau configuré (v0.9.0) ---
+  // wifiManager.scanNetworks();  // (bloquant) liste les réseaux disponibles
+  // wifiManager.connectToNetwork("Reseau_Trouve", "motdepasse", 0);  // Ajout + connexion ciblée
+  // wifiManager.removeNetwork(0);       // Retire un réseau de la liste
+  // wifiManager.updateNetwork(0, "Nouveau_SSID", "nouveau_mdp", 0);  // Modifie un réseau
+
+  // --- Méthode 7: Scan asynchrone + résultats (v0.9.0) ---
+  // wifiManager.scanNetworksAsync();    // Non-bloquant, piloté par update()
+  // ... puis dans loop() une fois isScanRunning() == false :
+  // for (int i = 0; i < wifiManager.getScanResultCount(); i++) {
+  //   Serial.printf("%s (%d dBm) canal %d\n", wifiManager.getScanResultSSID(i).c_str(),
+  //                 wifiManager.getScanResultRSSI(i), wifiManager.getScanResultChannel(i));
+  // }
+  // int8_t rssi; uint8_t enc;
+  // int idx = wifiManager.findNetworkInScan("Reseau_1", &rssi, &enc);
+
+  // --- Méthode 8: Diagnostics (v0.9.0) ---
+  // Serial.println(wifiManager.getBSSID());                 // MAC de l'AP connecté
+  // Serial.println(wifiManager.getChannel());               // Canal radio
+  // Serial.println(wifiManager.getSubnetMask());            // Masque de sous-réseau
+  // Serial.println(wifiManager.getSignalQuality());         // 0-100 %
+  // Serial.println(wifiManager.getLastDisconnectReasonText()); // Cause de la dernière déco
+  // Serial.println(wifiManager.getAPClientCount());         // Clients sur l'AP
+
+  // --- Méthode 9: IP statique + puissance TX (v0.9.0) ---
+  // wifiManager.setStaticIP(IPAddress(192,168,1,50), IPAddress(192,168,1,1),
+  //                         IPAddress(255,255,255,0));
+  // wifiManager.useDHCP();                 // Revenir au DHCP
+  // wifiManager.setTxPower(17.0f);         // Puissance d'émission en dBm
+
+  // --- Méthode 10: Bascule sur signal faible (v0.9.0) ---
+  // wifiManager.setMinRSSI(-80);           // Bascule si signal < -80 dBm (hystérésis +5)
+  // wifiManager.setConnectTimeout(12000);  // Timeout par tentative (ms)
+
+  // --- Méthode 11: Persistance EEPROM chiffrée (v0.9.0) ---
+  // wifiManager.setStorageKey("ma_cle_secrete");  // Clé utilisateur (dérivée avec le chip)
+  // wifiManager.saveNetworks();                   // Sauvegarde chiffrée (AES-128-CBC)
+  // wifiManager.loadNetworks();                   // Recharge au démarrage
+  // wifiManager.factoryReset();                   // Efface réseaux + EEPROM
 
   wifiManager.printStatus(true);
 }
