@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.9.0 - Multi-Réseaux + mDNS
+// v0.10.0 - Multi-Réseaux + mDNS + Classement dynamique
 // ===========================================
 
 
@@ -9,7 +9,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.9.0
+ * @version 0.10.0
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -107,6 +107,15 @@ struct WiFiNetwork {
     unsigned long lastFail;     ///< Timestamp du dernier échec (ms)
     unsigned long lastAttempt;  ///< Timestamp de la dernière tentative (ms)
     bool configured;            ///< true si ce slot est utilisé
+
+    // --- classement dynamique (local) : score composite 0..1 ---
+    float         connEff;      ///< Déconnexions avec oubli exponentiel (N_eff)
+    unsigned long lastDecay;    ///< Timestamp du dernier oubli de connEff (ms)
+    int8_t        rssiHist[5];  ///< Historique RSSI (scan) pour l'écart-type
+    uint8_t       histCount;    ///< Nb d'échantillons RSSI valides
+    uint8_t       histIdx;      ///< Index d'écriture dans rssiHist
+    bool          linked;       ///< Connecté sur ce réseau
+    unsigned long connSince;    ///< Timestamp de début de connexion (uptime, ms)
 };
 
 /**
@@ -378,6 +387,51 @@ public:
      *       pour éviter les bascules répétées.
      */
     void setMinRSSI(int8_t dbm);
+
+    // ===========================================
+    // CLASSEMENT DYNAMIQUE DES RÉSEAUX (score composite 0..1)
+    // ===========================================
+
+    /**
+     * @brief Active un classement dynamique basé sur un score composite pondéré.
+     *
+     * Score (0..1, 1 = idéal) = w_sig·c_sig + w_con·c_con + w_stab·c_stab + w_up·c_up
+     *   c_sig  = (RSSI - rssiMin)/(rssiMax - rssiMin)            (borné 0..1)
+     *   c_con  = 1/(1 + N_eff)   N_eff = déconnexions à oubli exponentiel (tau)
+     *   c_stab = 1/(1 + ecartType(RSSI)/sigma0)                  (sur N derniers scans)
+     *   c_up   = 0.5 si non connecté, sinon min(uptime/tauUp, 1)
+     *
+     * La sélection choisit le score maximal ; la bascule réelle n'a lieu que si
+     * score(candidat) >= score(courant) + margin (anti-rebond). Un scan RSSI
+     * asynchrone est lancé toutes les scanIntervalMs ; le failover est inhibé
+     * pendant le scan (coupure radio ~2 s). Les scans non bloquants sont
+     * silencieux côté serveur (résultat journalisé sur le port série).
+     *
+     * @param enable           active/désactive (défaut false)
+     * @param rssiMin          RSSI pour c_sig=0 (dBm, ex. -85)
+     * @param rssiMax          RSSI pour c_sig=1 (dBm, ex. -30)
+     * @param forgetTauS       constante de temps d'oubli des déconnexions (s)
+     * @param uptimeTauS       constante de temps d'ancienneté (s)
+     * @param wSig/wCon/wStab/wUp poids des critères (somme = 1)
+     * @param margin           marge de bascule (0..1, ex. 0.08)
+     * @param scanIntervalMs   période de scan RSSI (ms)
+     * @param stabSamples      nb d'échantillons RSSI pour l'écart-type (<=5)
+     * @param sigma0           écart-type de référence (dB)
+     */
+    void setDynamicRanking(bool enable,
+                           int8_t rssiMin = -85, int8_t rssiMax = -30,
+                           uint32_t forgetTauS = 3600, uint32_t uptimeTauS = 3600,
+                           float wSig = 0.50f, float wCon = 0.25f,
+                           float wStab = 0.15f, float wUp = 0.10f,
+                           float margin = 0.08f, uint32_t scanIntervalMs = 120000,
+                           uint8_t stabSamples = 5, float sigma0 = 3.0f);
+
+    /** @return Score composite (0..100) du réseau index, ou -1 si invalide. */
+    int getNetworkScore(int index) const;
+
+    /** @brief Callback d'autorisation du scan : le scan est reporté si la callback
+     *  renvoie false (ex. une requête MCP est en cours → éviter de couper le WiFi). */
+    void setScanGate(bool (*cb)());
 
     // ===========================================
     // GESTION DES CREDENTIALS (MODE LEGACY)
@@ -760,6 +814,22 @@ private:
     int8_t _minRSSI = 0;                ///< Seuil de basculement sur signal faible (0 = désactivé)
     bool _rssiWeak = false;             ///< État d'hystérésis pour setMinRSSI
 
+    // --- classement dynamique (local) ---
+    bool     _dynRank = false;          ///< Active le score composite
+    int8_t   _rankRssiMin = -85;        ///< RSSI -> c_sig=0
+    int8_t   _rankRssiMax = -30;        ///< RSSI -> c_sig=1
+    uint32_t _rankForgetTauS = 3600;    ///< Oubli des déconnexions (s)
+    uint32_t _rankUptimeTauS = 3600;    ///< Ancienneté lien (s)
+    float    _rankWSig = 0.50f, _rankWCon = 0.25f, _rankWStab = 0.15f, _rankWUp = 0.10f;
+    float    _rankMargin = 0.08f;       ///< Marge anti-rebond (0..1)
+    uint32_t _rankScanIntervalMs = 120000;
+    uint8_t  _rankStabSamples = 5;      ///< Échantillons RSSI pour l'écart-type (<=5)
+    float    _rankSigma0 = 3.0f;        ///< Écart-type de référence (dB)
+    unsigned long _lastRankScan = 0;    ///< Dernier scan RSSI (ms)
+    bool     _scanInhibitFailover = false; ///< Failover inhibé pendant un scan
+    bool     _rankEvalPending = false;  ///< Évaluation du classement en attente (scan en cours)
+    bool (*_scanGate)() = nullptr;      ///< Autorisation externe du scan (nullptr = toujours ok)
+
     // ===========================================
     // VARIABLES MEMBRES - IP STATIQUE
     // ===========================================
@@ -899,6 +969,11 @@ private:
      */
     int _findBestNetwork();
 
+    // --- classement dynamique (local) ---
+    float _scoreNetwork(int i) const;                 ///< score composite 0..1
+    void  _decayConnEff(WiFiNetwork& net, unsigned long now); ///< oubli N_eff
+    int   _bestByScore(bool excludeCurrent);          ///< argmax score
+
     /**
      * @brief Réinitialise le WiFi proprement (déconnexion + mode OFF + mode STA)
      */
@@ -1017,6 +1092,13 @@ WiFiManagerESP::WiFiManagerESP() {
         _networks[i].lastFail = 0;
         _networks[i].lastAttempt = 0;
         _networks[i].configured = false;
+        _networks[i].connEff = 0.0f;
+        _networks[i].lastDecay = 0;
+        memset(_networks[i].rssiHist, 0, sizeof(_networks[i].rssiHist));
+        _networks[i].histCount = 0;
+        _networks[i].histIdx = 0;
+        _networks[i].linked = false;
+        _networks[i].connSince = 0;
         _lastTriedNetwork = -1;
     }
     // Initialiser l'historique
@@ -1057,6 +1139,13 @@ bool WiFiManagerESP::addNetwork(const char* ssid, const char* password, int prio
     net.lastFail = 0;       // lastFail
     net.lastAttempt = 0;    // lastAttempt
     net.configured = true;  // configured
+    net.connEff = 0.0f;
+    net.lastDecay = 0;
+    memset(net.rssiHist, 0, sizeof(net.rssiHist));
+    net.histCount = 0;
+    net.histIdx = 0;
+    net.linked = false;
+    net.connSince = 0;
     _networkCount++;
 
     // Trier par priorité
@@ -1322,6 +1411,112 @@ void WiFiManagerESP::setMinRSSI(int8_t dbm) {
 // IMPLÉMENTATION - MÉTHODES PRIVÉES MULTI-RÉSEAUX
 // ===========================================
 
+// ---------------------------------------------------------------------------
+// CLASSEMENT DYNAMIQUE (score composite 0..1) — local
+// ---------------------------------------------------------------------------
+void WiFiManagerESP::setDynamicRanking(bool enable,
+                                       int8_t rssiMin, int8_t rssiMax,
+                                       uint32_t forgetTauS, uint32_t uptimeTauS,
+                                       float wSig, float wCon, float wStab, float wUp,
+                                       float margin, uint32_t scanIntervalMs,
+                                       uint8_t stabSamples, float sigma0) {
+    _dynRank = enable;
+    _rankRssiMin = rssiMin;
+    _rankRssiMax = rssiMax;
+    _rankForgetTauS = forgetTauS ? forgetTauS : 3600;
+    _rankUptimeTauS = uptimeTauS ? uptimeTauS : 3600;
+    _rankWSig = wSig; _rankWCon = wCon; _rankWStab = wStab; _rankWUp = wUp;
+    _rankMargin = margin;
+    _rankScanIntervalMs = scanIntervalMs ? scanIntervalMs : 120000;
+    _rankStabSamples = (stabSamples < 1) ? 1 : (stabSamples > 5 ? 5 : stabSamples);
+    _rankSigma0 = (sigma0 > 0.0f) ? sigma0 : 3.0f;
+    Serial.printf("[WiFiManagerESP] Classement dynamique: %s (sig[%d..%d dBm] "
+                  "w=%.2f/%.2f/%.2f/%.2f marge=%.2f scan=%lus)\n",
+                  enable ? "ACTIVÉ" : "désactivé", (int)rssiMin, (int)rssiMax,
+                  wSig, wCon, wStab, wUp, margin, (unsigned long)(_rankScanIntervalMs / 1000));
+}
+
+// Oubli exponentiel du compteur de déconnexions.
+void WiFiManagerESP::_decayConnEff(WiFiNetwork& net, unsigned long now) {
+    if (net.lastDecay == 0) { net.lastDecay = now; return; }
+    unsigned long dt = now - net.lastDecay;
+    net.lastDecay = now;
+    if (dt == 0 || net.connEff <= 0.0f) return;
+    float k = expf(-(float)dt / (float)(_rankForgetTauS * 1000UL));
+    net.connEff *= k;
+    if (net.connEff < 0.001f) net.connEff = 0.0f;
+}
+
+float WiFiManagerESP::_scoreNetwork(int i) const {
+    if (i < 0 || i >= _networkCount || !_networks[i].configured) return -1.0f;
+    const WiFiNetwork& net = _networks[i];
+
+    // RSSI : scan si vu, sinon RSSI réel si connecté, sinon plancher.
+    int rssi = _rankRssiMin - 15; // plancher (ex. -100)
+    bool found = false;
+    int8_t scanRssi = 0;
+    if (findNetworkInScan(net.ssid, &scanRssi, nullptr) >= 0) { rssi = scanRssi; found = true; }
+    else if (net.linked) { rssi = WIFI_LIB.RSSI(); found = true; }
+
+    // c_sig (linéaire borné)
+    float cSig = ((float)(rssi - _rankRssiMin)) / (float)(_rankRssiMax - _rankRssiMin);
+    if (cSig < 0.0f) cSig = 0.0f;
+    if (cSig > 1.0f) cSig = 1.0f;
+    if (!found) cSig = 0.0f;   // réseau non vu -> signal inexploitable
+
+    // c_con = 1/(1+N_eff)
+    float cCon = 1.0f / (1.0f + net.connEff);
+
+    // c_stab = 1/(1 + sigma/sigma0)
+    float cStab = 1.0f;
+    if (net.histCount >= 2) {
+        float mean = 0.0f;
+        for (uint8_t k = 0; k < net.histCount; k++) mean += net.rssiHist[k];
+        mean /= net.histCount;
+        float var = 0.0f;
+        for (uint8_t k = 0; k < net.histCount; k++) {
+            float d = net.rssiHist[k] - mean; var += d * d;
+        }
+        var /= net.histCount;
+        cStab = 1.0f / (1.0f + sqrtf(var) / _rankSigma0);
+    }
+
+    // c_up = 0.5 si non connecté, sinon min(uptime/tau,1)
+    float cUp = 0.5f;
+    if (net.linked) {
+        unsigned long up = (millis() - net.connSince) / 1000UL;
+        cUp = (float)up / (float)_rankUptimeTauS;
+        if (cUp > 1.0f) cUp = 1.0f;
+    }
+
+    return _rankWSig * cSig + _rankWCon * cCon + _rankWStab * cStab + _rankWUp * cUp;
+}
+
+int WiFiManagerESP::getNetworkScore(int index) const {
+    float s = _scoreNetwork(index);
+    return (s < 0.0f) ? -1 : (int)lroundf(s * 100.0f);
+}
+
+void WiFiManagerESP::setScanGate(bool (*cb)()) { _scanGate = cb; }
+
+int WiFiManagerESP::_bestByScore(bool excludeCurrent) {
+    int best = -1;
+    float bestScore = -1.0f;
+    for (int i = 0; i < _networkCount; i++) {
+        if (!_networks[i].configured) continue;
+        if (excludeCurrent && i == _currentNetwork) continue;
+        float s = _scoreNetwork(i);
+        // départage : à score égal, la plus petite priorité gagne
+        if (s > bestScore + 1e-4f ||
+            (fabsf(s - bestScore) <= 1e-4f && best >= 0 &&
+             _networks[i].priority < _networks[best].priority)) {
+            bestScore = s;
+            best = i;
+        }
+    }
+    return best;
+}
+
 void WiFiManagerESP::_sortNetworksByPriority() {
     // Tri par insertion simple (par priorité croissante)
     for (int i = 1; i < _networkCount; i++) {
@@ -1409,6 +1604,9 @@ void WiFiManagerESP::_onConnectSuccess() {
     }
 
     _networks[index].failCount = 0; // ← Reset SEULEMENT au succès
+    _networks[index].linked = true;
+    _networks[index].connSince = millis();
+    if (_dynRank) _lastRankScan = 0;   // planifier un scan/évaluation après (re)connexion
     _lastConnectedNetwork = index;
     _wifiInitialized = true;
 
@@ -1440,6 +1638,8 @@ void WiFiManagerESP::_onConnectFail() {
     if (index >= 0 && index < _networkCount) {
         _networks[index].failCount++;  // Incrémenté en cas d'échec
         _networks[index].lastFail = millis();
+        if (_dynRank) { _decayConnEff(_networks[index], millis()); _networks[index].connEff += 1.0f; }
+        _networks[index].linked = false;
         _addToHistory(_networks[index].ssid, "❌ Échec", "", 0, 0xFF);
     } else {
         _addToHistory("?", "❌ Échec", "", 0, 0xFF);
@@ -1461,49 +1661,64 @@ void WiFiManagerESP::_onConnectFail() {
 int WiFiManagerESP::_findBestNetwork() {
     if (_networkCount == 0) return -1;
 
-    int bestNetwork = -1;
-    int bestPriority = 999;
     unsigned long now = millis();
 
-    // Première passe : chercher le réseau avec la meilleure priorité
-    // qui n'est PAS le réseau actuel et qui n'est PAS en cooldown
+    // Réinitialiser les compteurs dont le cooldown est écoulé
     for (int i = 0; i < _networkCount; i++) {
-        // Sauter le réseau actuel
-        if (i == _currentNetwork) continue;
-
-        // Réinitialiser le compteur si le cooldown est passé
-        if (_networks[i].failCount > 0 && 
+        if (_networks[i].failCount > 0 &&
             now - _networks[i].lastFail >= _failCooldown) {
             _networks[i].failCount = 0;
         }
+    }
 
-        // Vérifier si le réseau est en cooldown
-        if (_networks[i].failCount > 0 && 
+    // --- Mode classement dynamique : argmax du score composite ---
+    if (_dynRank) {
+        int best = -1;
+        float bestScore = -2.0f;
+        for (int i = 0; i < _networkCount; i++) {
+            if (!_networks[i].configured) continue;
+            if (i == _currentNetwork) continue;                 // ne pas se ré-élire soi-même
+            if (_networks[i].failCount > 0 &&
+                now - _networks[i].lastFail < _failCooldown) continue;  // en cooldown
+            float s = _scoreNetwork(i);
+            if (s > bestScore + 1e-4f) { bestScore = s; best = i; }
+        }
+        if (best >= 0) return best;
+        // Tous hors-jeu : réessayer le réseau courant, sinon reset global
+        if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
+            _networks[_currentNetwork].failCount = 0;
+            return _currentNetwork;
+        }
+        for (int i = 0; i < _networkCount; i++) _networks[i].failCount = 0;
+        return 0;
+    }
+
+    // --- Mode classique : meilleure priorité ---
+    int bestNetwork = -1;
+    int bestPriority = 999;
+
+    for (int i = 0; i < _networkCount; i++) {
+        if (i == _currentNetwork) continue;
+        if (_networks[i].failCount > 0 &&
             now - _networks[i].lastFail < _failCooldown) {
             continue; // Réseau en cooldown
         }
-
-        // Chercher le réseau avec la meilleure priorité (la plus petite valeur)
         if (_networks[i].priority < bestPriority) {
             bestPriority = _networks[i].priority;
             bestNetwork = i;
         }
     }
 
-    // Si on a trouvé un réseau, le retourner
     if (bestNetwork >= 0) {
         return bestNetwork;
     }
 
-    // Deuxième passe : tous les autres réseaux sont en cooldown
-    // Réinitialiser le réseau actuel et le réessayer
     if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
         Serial.println("[WiFiManagerESP] Tous les réseaux en cooldown, reset du réseau actuel");
         _networks[_currentNetwork].failCount = 0;
         return _currentNetwork;
     }
 
-    // Dernière chance : réinitialiser TOUS les réseaux et reprendre au début
     Serial.println("[WiFiManagerESP] Reset de tous les réseaux");
     for (int i = 0; i < _networkCount; i++) {
         _networks[i].failCount = 0;
@@ -2001,9 +2216,11 @@ void WiFiManagerESP::update() {
     bool lostLink = (previousStatus == WL_CONNECTED && _currentStatus != WL_CONNECTED) ||
                     (_connState == ConnectionState::CONN_CONNECTED && _currentStatus != WL_CONNECTED);
 
-    if (lostLink) {
+    if (lostLink && !_scanInhibitFailover) {
         Serial.println("[WiFiManagerESP] ⚠️ Connexion perdue détectée!");
         if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
+            if (_dynRank) { _decayConnEff(_networks[_currentNetwork], millis()); _networks[_currentNetwork].connEff += 1.0f; }
+            _networks[_currentNetwork].linked = false;
             _addToHistory(_networks[_currentNetwork].ssid, "❌ Déconnecté", "", 0, 0xFF);
         }
         // Sortir de l'état CONNECTED pour permettre au failover de se déclencher
@@ -2013,7 +2230,7 @@ void WiFiManagerESP::update() {
     }
 
     // Basculement sur signal trop faible (setMinRSSI), avec hystérésis +5 dBm
-    if (_minRSSI != 0 && _currentStatus == WL_CONNECTED && _networkCount > 1) {
+    if (_minRSSI != 0 && _currentStatus == WL_CONNECTED && _networkCount > 1 && !_scanInhibitFailover) {
         int8_t rssi = WIFI_LIB.RSSI();
         if (!_rssiWeak && rssi < _minRSSI) {
             _rssiWeak = true;
@@ -2037,7 +2254,79 @@ void WiFiManagerESP::update() {
         _connState = ConnectionState::CONN_IDLE;
     }
 
-    if (_autoSwitch && _currentStatus != WL_CONNECTED && _connState == ConnectionState::CONN_IDLE) {
+    // ------------------------------------------------------------------
+    // Classement dynamique : scan périodique + roaming proactif
+    // ------------------------------------------------------------------
+    if (_dynRank) {
+        unsigned long now = millis();
+
+        // Sécurité : si le scan async ne rend pas la main (callback perdu), on
+        // débloque l'état après 20 s pour ne pas rester sans scan indéfiniment.
+        if (_rankEvalPending && !_scanAsyncRunning &&
+            (_lastRankScan == 0 || now - _lastRankScan > 20000)) {
+            Serial.println("[WiFiManagerESP] Scan async: delai depasse, reinitialisation");
+            _rankEvalPending = false;
+            _scanInhibitFailover = false;
+        }
+        if (_scanInhibitFailover && now - _lastRankScan > 20000) {
+            _scanInhibitFailover = false;
+        }
+
+        // Fin d'un scan asynchrone : évaluer le classement
+        if (_rankEvalPending && !_scanAsyncRunning) {
+            _rankEvalPending = false;
+            _scanInhibitFailover = false;
+
+            // Oubli progressif des déconnexions pour tous les réseaux
+            for (int i = 0; i < _networkCount; i++) _decayConnEff(_networks[i], now);
+
+            // Journal série des scores
+            Serial.println("[WiFiManagerESP] --- Scores classement dynamique ---");
+            for (int i = 0; i < _networkCount; i++)
+                Serial.printf("  [%d] %-20s : %3d%%  (echecs %u, connEff %.2f)\n",
+                              i, _networks[i].ssid, getNetworkScore(i),
+                              _networks[i].failCount, _networks[i].connEff);
+
+            // Roaming proactif : basculer si un candidat dépasse le courant + marge
+            if (_currentStatus == WL_CONNECTED && _connState != ConnectionState::CONN_CONNECTING) {
+                int cur = _currentNetwork;
+                float sCur = (cur >= 0 && cur < _networkCount) ? _scoreNetwork(cur) : -1.0f;
+                int best = _bestByScore(true);
+                if (best >= 0) {
+                    float sBest = _scoreNetwork(best);
+                    bool cd = _networks[best].failCount > 0 &&
+                              now - _networks[best].lastFail < _failCooldown;
+                    if (!cd && sBest >= sCur + _rankMargin) {
+                        Serial.printf("[WiFiManagerESP] 🔀 Roaming -> %s (score %d%% vs %d%%)\n",
+                                      _networks[best].ssid, (int)(sBest * 100 + 0.5f),
+                                      (int)(sCur * 100 + 0.5f));
+                        if (cur >= 0 && cur < _networkCount) {
+                            _networks[cur].failCount = _maxRetries;
+                            _networks[cur].lastFail = now;
+                            _networks[cur].linked = false;
+                        }
+                        _lastTriedNetwork = cur;
+                        _startConnection(best, _connectTimeout);
+                    }
+                }
+            }
+        }
+
+        // Lancer un scan périodique (si connecté, stable et aucun scan en cours)
+        if (_currentStatus == WL_CONNECTED &&
+            _connState == ConnectionState::CONN_CONNECTED &&
+            !_scanAsyncRunning && !_rankEvalPending &&
+            (_scanGate == nullptr || _scanGate()) &&
+            (_lastRankScan == 0 || now - _lastRankScan >= _rankScanIntervalMs)) {
+            _lastRankScan = now;
+            if (scanNetworksAsync()) {
+                _rankEvalPending = true;
+                _scanInhibitFailover = true;   // ignorer la coupure radio du scan
+            }
+        }
+    }
+
+    if (_autoSwitch && _currentStatus != WL_CONNECTED && _connState == ConnectionState::CONN_IDLE && !_scanInhibitFailover) {
         unsigned long now = millis();
 
         if (now - _lastConnectionAttempt >= _retryDelay) {
@@ -2049,19 +2338,20 @@ void WiFiManagerESP::update() {
                 _networks[_currentNetwork].lastFail = now;
             }
 
-            // Chercher le prochain réseau qui n'est pas en cooldown
-            // en évitant de réessayer celui qui vient d'échouer (_lastTriedNetwork)
+            // Chercher le prochain réseau : par meilleur score (dynamique) ou
+            // par rotation (mode classique, en évitant le dernier essayé).
             int nextNetwork = -1;
-            for (int offset = 1; offset <= _networkCount; offset++) {
-                int candidate = (_currentNetwork + offset) % _networkCount;
-                
-                // Éviter de réessayer immédiatement le dernier réseau essayé avec échec
-                if (candidate == _lastTriedNetwork && _networkCount > 1) continue;
-                
-                if (_networks[candidate].failCount == 0 ||
-                    now - _networks[candidate].lastFail >= _failCooldown) {
-                    nextNetwork = candidate;
-                    break;
+            if (_dynRank) {
+                nextNetwork = _findBestNetwork();
+            } else {
+                for (int offset = 1; offset <= _networkCount; offset++) {
+                    int candidate = (_currentNetwork + offset) % _networkCount;
+                    if (candidate == _lastTriedNetwork && _networkCount > 1) continue;
+                    if (_networks[candidate].failCount == 0 ||
+                        now - _networks[candidate].lastFail >= _failCooldown) {
+                        nextNetwork = candidate;
+                        break;
+                    }
                 }
             }
 

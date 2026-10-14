@@ -5,9 +5,9 @@
 [![PlatformIO](https://img.shields.io/badge/platformio-ESP8266,ESP32-violet?logo=platformio)](https://platformio.org/)
 [![Arduino Library Badge](https://www.ardu-badge.com/badge/WiFiManagerESP.svg)](https://github.com/Fo170?tab=repositories)
 
-Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32 : mode point d'accès (AP), **connexion non-bloquante (machine à états)**, **gestion multi-réseaux avec basculement automatique (failover)**, reconnexion automatique native du stack WiFi, historique des connexions et mDNS.
+Bibliothèque Arduino/PlatformIO pour la gestion simplifiée des connexions WiFi sur ESP8266 et ESP32 : mode point d'accès (AP), **connexion non-bloquante (machine à états)**, **gestion multi-réseaux avec basculement automatique (failover)** et **classement dynamique des réseaux**, reconnexion automatique native du stack WiFi, historique des connexions et mDNS.
 
-Version 0.9.0
+Version 0.10.0
 
 ## ✨ Fonctionnalités
 
@@ -19,6 +19,7 @@ Version 0.9.0
 - ✅ **Scan WiFi** bloquant (`scanNetworks()`) ou asynchrone (`scanNetworksAsync()`) + cache de résultats
 - ✅ **Diagnostics** : BSSID, canal, masque, qualité du signal, raison de déconnexion, clients AP
 - ✅ **Bascule sur signal faible** (`setMinRSSI`, hystérésis) et timeout de connexion configurable
+- ✅ **Classement dynamique des réseaux** (`setDynamicRanking()`) : score composite (RSSI, déconnexions à oubli exponentiel, stabilité, ancienneté), roaming proactif et scan RSSI périodique
 - ✅ **IP statique** (`setStaticIP()` / `useDHCP()`) et puissance TX (`setTxPower()`)
 - ✅ **Persistance EEPROM chiffrée AES-128** (`saveNetworks()` / `loadNetworks()`)
 - ✅ **Historique des connexions avec timestamps et type de chiffrement**
@@ -46,7 +47,7 @@ platform = espressif32
 board = esp32dev
 framework = arduino
 lib_deps = 
-    https://github.com/Fo170/WiFiManagerESP.git@^0.9.0
+    https://github.com/Fo170/WiFiManagerESP.git@^0.10.0
 ```
 
 > **Dépendance requise** : la bibliothèque `NON_BLOCKING_DELAY` est utilisée pour les délais non bloquants.
@@ -96,6 +97,30 @@ void setMinRSSI(int8_t dbm)          // Bascule si signal < seuil (0 = désactiv
 > ne prend le relais (failover) que si la coupure persiste au-delà de ce que le stack peut résorber.
 > Désactivable via `setAutoReconnect(false)` si vous préférez que le failover agisse dès la première
 > détection de perte de lien.
+
+### Classement dynamique des réseaux (v0.10.0)
+
+```cpp
+void setDynamicRanking(bool enable,
+                       int8_t rssiMin = -85, int8_t rssiMax = -30,
+                       uint32_t forgetTauS = 3600, uint32_t uptimeTauS = 3600,
+                       float wSig = 0.50f, float wCon = 0.25f,
+                       float wStab = 0.15f, float wUp = 0.10f,
+                       float margin = 0.08f, uint32_t scanIntervalMs = 120000,
+                       uint8_t stabSamples = 5, float sigma0 = 3.0f)
+int getNetworkScore(int index)   // Score composite 0-100 % (‑1 si invalide)
+void setScanGate(bool (*cb)())   // Autorisation externe du scan (retourne false pour reporter)
+```
+
+> **Score composite (0..1)** = `w_sig·c_sig + w_con·c_con + w_stab·c_stab + w_up·c_up` :
+> `c_sig` = RSSI normalisé, `c_con` = `1/(1+N_eff)` (déconnexions à oubli exponentiel `forgetTauS`),
+> `c_stab` = `1/(1+écart‑type(RSSI)/sigma0)` sur les `stabSamples` derniers scans,
+> `c_up` = `0.5` si non connecté sinon `min(uptime/uptimeTauS, 1)`.
+>
+> La sélection retient le meilleur score ; la bascule n'a lieu que si
+> `score(candidat) >= score(courant) + margin` (anti‑rebond). Un scan RSSI asynchrone est lancé
+> toutes les `scanIntervalMs` ; le failover est inhibé pendant le scan (coupure radio ~2 s).
+> `setScanGate()` permet de reporter le scan (ex. requête MCP en cours). Désactivé par défaut.
 
 ### Configuration (legacy mono-réseau)
 
@@ -507,6 +532,7 @@ Les contributions sont les bienvenues ! N'hésitez pas à ouvrir une issue ou un
 
 | Version |   Date  | Changements |
 |---------|---------|-------------|
+| **v0.10.0** | 2026-10	| **Classement dynamique des réseaux** : `setDynamicRanking()` (score composite pondéré RSSI / déconnexions à oubli exponentiel / stabilité / ancienneté du lien), `getNetworkScore()` (0-100 %), `setScanGate()` (autorisation externe du scan). **Roaming proactif** : bascule vers un meilleur candidat si `score >= courant + marge` (anti-rebond), scan RSSI asynchrone périodique (`scanIntervalMs`), failover inhibé pendant le scan (coupure radio). Champs `WiFiNetwork` enrichis (`connEff`, `rssiHist`, `linked`, `connSince`…) et `_findBestNetwork()` refactorisé (mode dynamique + classique). |
 | **v0.9.0** | 2026-09	| **Diagnostics** : `getBSSID()`, `getChannel()`, `getSubnetMask()`, `getSignalQuality()`, `getLastDisconnectReason()`/`…Text()`, `getAPClientCount()`. **Robustesse** : `setConnectTimeout()`, `setMinRSSI()` (bascule sur signal faible avec hystérésis +5 dBm), `hasNetwork()`, `indexOfNetwork()`, `updateNetwork()`, `removeMDNSService()`. **Scan non bloquant** : `scanNetworksAsync()` + cache de résultats (12 max) et accesseurs `getScanResult*()` / `findNetworkInScan()`. **IP statique** : `setStaticIP()` / `useDHCP()`. **Radio** : `setTxPower()`. **Persistance EEPROM chiffrée** : AES-128-CBC + SHA-256 embarqués (sans dépendance), clé dérivée du chip + clé utilisateur (`setStorageKey()`), `saveNetworks()` / `loadNetworks()` / `factoryReset()`. |
 | **v0.8.0** | 2026-09	| **Optimisation mémoire** : réduction des constantes par défaut pour limiter l'empreinte RAM — `WIFIMANAGER_MAX_HISTORY` 20→8, `WIFIMANAGER_MAX_NETWORKS` 10→3, `WIFIMANAGER_MAX_MDNS_SERVICES` 5→2. **Chiffrement WiFi** : nouvelle méthode `scanNetworks()` (scan bloquant + affichage SSID/RSSI/chiffrement + retour String) ; affichage du type de chiffrement dans `printStatus()`, `Etat_Wifi()` et `printHistory()` (nouvelle colonne) ; mise en cache du chiffrement du réseau connecté (ESP32 via `esp_wifi_sta_get_ap_info()`, ESP8266 renseigné par `scanNetworks()`) ; helper `_getEncryptionText()` multi-plateforme. **Provisionnement à chaud** : `connectToNetwork()` (ajout + connexion ciblée non-bloquante, utilisable sans réseau configuré), `removeNetwork(index)` ; les SSID/mots de passe sont désormais **copiés** dans la classe (ajout dynamique sûr). |
 | **v0.7.9** | 2026-08	| **Intégration ESP-NOW** : hooks applicatifs `onWiFiConnected()` / `onWiFiDisconnected()` (appelés à chaque connexion réussie / échec — pour ré-armer un stack dépendant du WiFi, ex. `esv.rearm()` + `esv.rearmPeers()`) ; **coupe le power-save WiFi après connexion** (`setPowerSaveOff(true)` par défaut → `WiFi.setSleep(false)` ESP32 / `WIFI_NONE_SLEEP` ESP8266) car le modem sleep fait manquer des trames ESP-NOW entrantes (~25-30 % de perte) ; compteur de réinitialisations WiFi `getResetCount()` / `getLastResetTime()` + log `🔄 reset WiFi #n` dans `_resetWiFi()` (chaque reset efface le stack ESP-NOW). |
