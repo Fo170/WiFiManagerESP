@@ -25,6 +25,9 @@
 #ifndef WIFIMANAGER_ESP_H
 #define WIFIMANAGER_ESP_H
 
+
+// Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
+#define __WIFIMANAGERESP_H_VERSION__ "0.10.0"
 #include <Arduino.h>
 #include <functional>
 #include <EEPROM.h>
