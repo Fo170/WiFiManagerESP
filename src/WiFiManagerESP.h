@@ -27,7 +27,7 @@
 
 
 // Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
-#define __WIFIMANAGERESP_H_VERSION__ "0.10.0"
+#define __WIFIMANAGERESP_H_VERSION__ "0.10.1"
 #include <Arduino.h>
 #include <functional>
 #include <EEPROM.h>
