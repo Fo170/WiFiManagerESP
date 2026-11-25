@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.10.0 - Multi-Réseaux + mDNS + Classement dynamique
+// v0.10.2 - Multi-Réseaux + mDNS + Classement dynamique
 // ===========================================
 
 
@@ -9,7 +9,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.10.0
+ * @version 0.10.2
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -27,7 +27,7 @@
 
 
 // Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
-#define __WIFIMANAGERESP_H_VERSION__ "0.10.1"
+#define __WIFIMANAGERESP_H_VERSION__ "0.10.2"
 #include <Arduino.h>
 #include <functional>
 #include <EEPROM.h>
@@ -329,7 +329,12 @@ public:
     int getNetworkFailCount(int index) const;
 
     /**
-     * @brief Bascule manuellement vers le réseau suivant
+     * @brief Bascule vers le réseau suivant dans l'ordre des index
+     *
+     * Parcours circulaire des réseaux configurés, en partant de celui qui suit
+     * le réseau courant. **Aucun classement, aucun cooldown** : le but est de
+     * tester chaque réseau enregistré, pas de choisir le meilleur (pour cela,
+     * le failover automatique utilise `_findBestNetwork()`).
      * @return true si le basculement a été initié
      */
     bool switchToNextNetwork();
@@ -1334,25 +1339,32 @@ bool WiFiManagerESP::switchToNextNetwork() {
         return false;
     }
 
-    Serial.println("[WiFiManagerESP] Basculement vers le réseau suivant...");
-
     // Marquer le réseau actuel comme ayant échoué pour forcer le changement
+    // (et éviter que le failover automatique ne le ré-élise aussitôt).
     if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
         _networks[_currentNetwork].failCount = _maxRetries;
         _networks[_currentNetwork].lastFail = millis();
     }
 
-    // Trouver et connecter au meilleur réseau suivant
-    int nextNetwork = _findBestNetwork();
-    if (nextNetwork >= 0) {
-        return _startConnection(nextNetwork, _connectTimeout);
-    }
-
-    // Si aucun réseau n'est disponible, réessayer le premier
-    if (_networkCount > 0) {
-        Serial.println("[WiFiManagerESP] Tous les réseaux en cooldown, réessai du premier");
-        _networks[0].failCount = 0; // Reset le compteur
-        return _startConnection(0, _connectTimeout);
+    // Vrai tourniquet : on force l'INDEX suivant, sans passer par
+    // _findBestNetwork().
+    // Motif (constaté le 25/11/2026) : _findBestNetwork() exclut le réseau
+    // courant, écarte ceux en cooldown et, si tous sont hors-jeu, réessaie le
+    // COURANT en remettant son failCount à zéro. Résultat : le même réseau
+    // était retenté indéfiniment et les autres n'étaient JAMAIS essayés
+    // (2 réseaux mémorisés, le second jamais tenté).
+    // Ici : parcours circulaire de tous les réseaux configurés, en partant de
+    // celui qui suit le courant. Aucun classement, aucun cooldown — le but est
+    // de TESTER chaque réseau enregistré, pas de choisir le meilleur.
+    int depart = (_currentNetwork >= 0 && _currentNetwork < _networkCount)
+                 ? _currentNetwork : -1;
+    for (int offset = 1; offset <= _networkCount; offset++) {
+        int cand = (depart + offset + _networkCount) % _networkCount;
+        if (cand == depart) continue;
+        if (!_networks[cand].configured) continue;
+        Serial.printf("[WiFiManagerESP] Basculement vers le réseau %d: %s\n",
+                      cand, _networks[cand].ssid);
+        if (_startConnection(cand, _connectTimeout)) return true;
     }
 
     return false;
