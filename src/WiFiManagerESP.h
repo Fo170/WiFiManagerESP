@@ -27,7 +27,7 @@
 
 
 // Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
-#define __WIFIMANAGERESP_H_VERSION__ "0.10.2"
+#define __WIFIMANAGERESP_H_VERSION__ "0.10.3"
 #include <Arduino.h>
 #include <functional>
 #include <EEPROM.h>
@@ -92,8 +92,11 @@
 #define WIFIMANAGER_EEPROM_SIZE 512
 #endif
 
-/** @brief Version du format de persistance EEPROM */
-#define WIFIMANAGER_STORAGE_VERSION 1
+/** @brief Version du format de persistance EEPROM
+ *  v2 : ajout de bssid[6] + channel par réseau (SSID masqué).
+ *  Un format v1 est déclaré invalide → retour aux réseaux de compilation,
+ *  jamais une lecture décalée. */
+#define WIFIMANAGER_STORAGE_VERSION 2
 
 // ===========================================
 // STRUCTURES DE DONNÉES
@@ -110,6 +113,14 @@ struct WiFiNetwork {
     unsigned long lastFail;     ///< Timestamp du dernier échec (ms)
     unsigned long lastAttempt;  ///< Timestamp de la dernière tentative (ms)
     bool configured;            ///< true si ce slot est utilisé
+
+    // --- SSID masqué : AP désigné explicitement (v0.10.3) ---
+    // ⚠️ Un SSID masqué n'apparaît pas dans les balises : la station ne le
+    //    trouve pas par scan. Il faut pointer le BSSID (et le canal) pour que
+    //    le SDK s'associe sans recherche. bssid[0..5] = 0 ⇒ non défini, on
+    //    revient au comportement historique (begin(ssid, password)).
+    uint8_t bssid[6];           ///< BSSID imposé (zéro = non défini)
+    int8_t  channel;            ///< Canal imposé (-1 = inconnu)
 
     // --- classement dynamique (local) : score composite 0..1 ---
     float         connEff;      ///< Déconnexions avec oubli exponentiel (N_eff)
@@ -250,6 +261,24 @@ public:
      * @note Les réseaux sont tentés par ordre de priorité croissante
      */
     bool addNetwork(const char* ssid, const char* password, int priority = 0);
+
+    /**
+     * @brief Ajoute un réseau en désignant l'AP (SSID masqué) — v0.10.3
+     *
+     * Un SSID masqué ne figure pas dans les balises : la station ne le trouve
+     * pas par scan et reste en `status=7` (Déconnecté). En fournissant le
+     * BSSID et le canal, la connexion se fait sans scan
+     * (`begin(ssid, pass, channel, bssid, connect)`).
+     *
+     * @param bssid   Adresse MAC de l'AP (6 octets). nullptr ou tout à zéro ⇒
+     *                comportement historique (scan).
+     * @param channel Canal de l'AP (1..13), ou -1 si inconnu.
+     * @warning Un BSSID peut changer (reboot de la box, mesh, roaming). En cas
+     *          d'échec répété, revenir à un réseau sans BSSID : le scan classique
+     *          retrouve l'AP même s'il a changé d'adresse.
+     */
+    bool addNetwork(const char* ssid, const char* password, int priority,
+                    const uint8_t* bssid, int8_t channel);
 
     /**
      * @brief Ajoute un réseau et lance immédiatement sa connexion (non-bloquant)
@@ -1127,6 +1156,11 @@ WiFiManagerESP::WiFiManagerESP() {
 // ===========================================
 
 bool WiFiManagerESP::addNetwork(const char* ssid, const char* password, int priority) {
+    return addNetwork(ssid, password, priority, nullptr, -1);
+}
+
+bool WiFiManagerESP::addNetwork(const char* ssid, const char* password, int priority,
+                                const uint8_t* bssid, int8_t channel) {
     if (_networkCount >= WIFIMANAGER_MAX_NETWORKS) {
         Serial.println("[WiFiManagerESP] ERREUR: Nombre maximum de réseaux atteint");
         return false;
@@ -1147,6 +1181,10 @@ bool WiFiManagerESP::addNetwork(const char* ssid, const char* password, int prio
     net.lastFail = 0;       // lastFail
     net.lastAttempt = 0;    // lastAttempt
     net.configured = true;  // configured
+    // SSID masqué : BSSID + canal imposés (v0.10.3)
+    if (bssid != nullptr) memcpy(net.bssid, bssid, sizeof(net.bssid));
+    else                  memset(net.bssid, 0, sizeof(net.bssid));
+    net.channel = (channel > 0) ? channel : (int8_t)-1;
     net.connEff = 0.0f;
     net.lastDecay = 0;
     memset(net.rssiHist, 0, sizeof(net.rssiHist));
@@ -1159,7 +1197,9 @@ bool WiFiManagerESP::addNetwork(const char* ssid, const char* password, int prio
     // Trier par priorité
     _sortNetworksByPriority();
 
-    Serial.printf("[WiFiManagerESP] Réseau ajouté: %s (priorité=%d)\n", ssid, priority);
+    bool masque = (bssid != nullptr);
+    Serial.printf("[WiFiManagerESP] Réseau ajouté: %s (priorité=%d)%s\n",
+                  ssid, priority, masque ? " [SSID masqué : BSSID imposé]" : "");
     return true;
 }
 
@@ -1570,7 +1610,26 @@ bool WiFiManagerESP::_startConnection(int index, uint32_t timeout) {
     _resetWiFi();
 
     // Démarrer la connexion (fire-and-forget : la progression est suivie par update())
-    WIFI_LIB.begin(_networks[index].ssid, _networks[index].password);
+    //
+    // ⚠️ SSID masqué (v0.10.3) : sans BSSID, le SDK cherche l'AP par scan et
+    //    reste en `status=7` — un SSID masqué ne figure pas dans les balises.
+    //    Avec le BSSID (et le canal), l'association se fait sans recherche.
+    bool bssidDefini = false;
+    for (size_t k = 0; k < sizeof(_networks[index].bssid); k++) {
+        if (_networks[index].bssid[k] != 0) { bssidDefini = true; break; }
+    }
+    if (bssidDefini) {
+        Serial.printf("[WiFiManagerESP] 🔒 AP désigné (BSSID %02X:%02X:%02X:%02X:%02X:%02X, canal %d)\n",
+                      _networks[index].bssid[0], _networks[index].bssid[1],
+                      _networks[index].bssid[2], _networks[index].bssid[3],
+                      _networks[index].bssid[4], _networks[index].bssid[5],
+                      (int)_networks[index].channel);
+        WIFI_LIB.begin(_networks[index].ssid, _networks[index].password,
+                       (_networks[index].channel > 0) ? _networks[index].channel : 0,
+                       _networks[index].bssid, true);
+    } else {
+        WIFI_LIB.begin(_networks[index].ssid, _networks[index].password);
+    }
 
     Serial.println("[WiFiManagerESP] ⏳ Connexion lancée (suivie par update())");
 
@@ -3392,7 +3451,7 @@ bool WiFiManagerESP::saveNetworks() {
         wm_aes128_cbc_encrypt(rk, iv, ssidBuf, 48, ssidCt);
         wm_aes128_cbc_encrypt(rk, iv, passBuf, 64, passCt);
 
-        if (off + 48 + 64 + 16 + 1 > sizeof(buf)) {
+        if (off + 48 + 64 + 16 + 1 + 7 > sizeof(buf)) {
             Serial.println("[WiFiManagerESP] ⚠️ EEPROM pleine : réseaux tronqués");
             break;
         }
@@ -3400,6 +3459,9 @@ bool WiFiManagerESP::saveNetworks() {
         memcpy(buf + off, passCt, 64); off += 64;
         memcpy(buf + off, iv, 16); off += 16;
         buf[off++] = (uint8_t)(_networks[i].priority & 0xff);
+        // v2 : SSID masqué — BSSID (6 o) + canal (1 o)
+        memcpy(buf + off, _networks[i].bssid, 6); off += 6;
+        buf[off++] = (uint8_t)(_networks[i].channel);
         stored++;
     }
     buf[5] = (uint8_t)stored;
@@ -3446,6 +3508,16 @@ bool WiFiManagerESP::loadNetworks() {
         off += 16;
         uint8_t prio = EEPROM.read((int)off);
         off += 1;
+        // v2 : SSID masqué — BSSID (6 o) + canal (1 o)
+        uint8_t bssid[6];
+        bool bssidDefini = false;
+        for (int k = 0; k < 6; k++) {
+            bssid[k] = EEPROM.read((int)(off + k));
+            if (bssid[k] != 0) bssidDefini = true;
+        }
+        off += 6;
+        int8_t canal = (int8_t)EEPROM.read((int)off);
+        off += 1;
 
         uint8_t ssidBuf[48], passBuf[64];
         wm_aes128_cbc_decrypt(rk, iv, ssidCt, 48, ssidBuf);
@@ -3453,7 +3525,12 @@ bool WiFiManagerESP::loadNetworks() {
         ssidBuf[47] = '\0';
         passBuf[63] = '\0';
 
-        if (addNetwork((const char*)ssidBuf, (const char*)passBuf, (int)prio)) loaded++;
+        if (bssidDefini) {
+            if (addNetwork((const char*)ssidBuf, (const char*)passBuf, (int)prio,
+                           bssid, canal)) loaded++;
+        } else {
+            if (addNetwork((const char*)ssidBuf, (const char*)passBuf, (int)prio)) loaded++;
+        }
     }
 
     EEPROM.end();
