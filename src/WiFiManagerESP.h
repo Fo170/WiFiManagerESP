@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.10.2 - Multi-Réseaux + mDNS + Classement dynamique
+// v0.10.4 - Multi-Réseaux + mDNS + Classement dynamique
 // ===========================================
 
 
@@ -9,7 +9,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.10.2
+ * @version 0.10.4
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -27,7 +27,7 @@
 
 
 // Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
-#define __WIFIMANAGERESP_H_VERSION__ "0.10.3"
+#define __WIFIMANAGERESP_H_VERSION__ "0.10.4"
 #include <Arduino.h>
 #include <functional>
 #include <EEPROM.h>
@@ -3478,15 +3478,27 @@ bool WiFiManagerESP::saveNetworks() {
 
 bool WiFiManagerESP::loadNetworks() {
     EEPROM.begin(WIFIMANAGER_EEPROM_SIZE);
-    bool valid = (EEPROM.read(0) == 'W' && EEPROM.read(1) == 'M' &&
-                  EEPROM.read(2) == 'E' && EEPROM.read(3) == 'S' &&
-                  EEPROM.read(4) == WIFIMANAGER_STORAGE_VERSION);
+    uint8_t storedVer = EEPROM.read(4);
+    bool magicOk = (EEPROM.read(0) == 'W' && EEPROM.read(1) == 'M' &&
+                    EEPROM.read(2) == 'E' && EEPROM.read(3) == 'S');
+    // v0.10.4 : on ACCEPTE aussi le format v1 (sans BSSID/canal).
+    // Motif : exiger l'égalité stricte avec WIFIMANAGER_STORAGE_VERSION faisait
+    // ignorer purement et simplement les réseaux enregistrés par une version
+    // antérieure, alors que les bons identifiants étaient déjà en mémoire. Le
+    // boîtier repartait soit sur ceux de connexions.h, soit sur le portail AP
+    // s'il n'en avait pas — donc perte des paramètres déjà connus.
+    bool valid = magicOk && (storedVer == 1 || storedVer == WIFIMANAGER_STORAGE_VERSION);
     uint8_t count = EEPROM.read(5);
 
     if (!valid) {
         EEPROM.end();
         Serial.println("[WiFiManagerESP] Aucune donnée de persistance valide");
         return false;
+    }
+
+    if (storedVer != WIFIMANAGER_STORAGE_VERSION) {
+        Serial.printf("[WiFiManagerESP] EEPROM v%u -> migration v%u (relecture du format precedent)\n",
+                      (unsigned)storedVer, (unsigned)WIFIMANAGER_STORAGE_VERSION);
     }
 
     uint8_t key[16];
@@ -3509,15 +3521,21 @@ bool WiFiManagerESP::loadNetworks() {
         uint8_t prio = EEPROM.read((int)off);
         off += 1;
         // v2 : SSID masqué — BSSID (6 o) + canal (1 o)
-        uint8_t bssid[6];
+        // ⚠️ Ces 7 octets n'existent PAS dans un blob v1 : ne les lire que si
+        //    le format stocké est ≥ 2, sinon on décale la lecture de tous les
+        //    réseaux suivants.
+        uint8_t bssid[6] = {0, 0, 0, 0, 0, 0};
         bool bssidDefini = false;
-        for (int k = 0; k < 6; k++) {
-            bssid[k] = EEPROM.read((int)(off + k));
-            if (bssid[k] != 0) bssidDefini = true;
+        int8_t canal = -1;
+        if (storedVer >= 2) {
+            for (int k = 0; k < 6; k++) {
+                bssid[k] = EEPROM.read((int)(off + k));
+                if (bssid[k] != 0) bssidDefini = true;
+            }
+            off += 6;
+            canal = (int8_t)EEPROM.read((int)off);
+            off += 1;
         }
-        off += 6;
-        int8_t canal = (int8_t)EEPROM.read((int)off);
-        off += 1;
 
         uint8_t ssidBuf[48], passBuf[64];
         wm_aes128_cbc_decrypt(rk, iv, ssidCt, 48, ssidBuf);
@@ -3535,6 +3553,18 @@ bool WiFiManagerESP::loadNetworks() {
 
     EEPROM.end();
     Serial.printf("[WiFiManagerESP] %d réseau(x) chargé(s) depuis l'EEPROM\n", loaded);
+
+    // Migration terminée : on réécrit au format courant pour que la prochaine
+    // lecture soit directe (et pour que les 7 octets BSSID/canal soient
+    // réellement présents). `saveNetworks()` rouvre l'EEPROM lui-même, d'où le
+    // `end()` ci-dessus. Sans ça, le blob v1 resterait indéfiniment sur le
+    // terrain et serait relu à chaque démarrage.
+    if (loaded > 0 && storedVer != WIFIMANAGER_STORAGE_VERSION) {
+        if (saveNetworks()) {
+            Serial.printf("[WiFiManagerESP] EEPROM migrée en v%u (%d réseau(x))\n",
+                          (unsigned)WIFIMANAGER_STORAGE_VERSION, loaded);
+        }
+    }
     return loaded > 0;
 }
 
