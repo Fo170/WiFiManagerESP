@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.10.4 - Multi-Réseaux + mDNS + Classement dynamique
+// v0.11.0 - Multi-Réseaux + mDNS + Classement dynamique
 // ===========================================
 
 
@@ -9,7 +9,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.10.4
+ * @version 0.11.0
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -27,7 +27,7 @@
 
 
 // Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
-#define __WIFIMANAGERESP_H_VERSION__ "0.10.4"
+#define __WIFIMANAGERESP_H_VERSION__ "0.11.0"
 #include <Arduino.h>
 #include <functional>
 #include <EEPROM.h>
@@ -92,11 +92,34 @@
 #define WIFIMANAGER_EEPROM_SIZE 512
 #endif
 
-/** @brief Version du format de persistance EEPROM
- *  v2 : ajout de bssid[6] + channel par réseau (SSID masqué).
- *  Un format v1 est déclaré invalide → retour aux réseaux de compilation,
- *  jamais une lecture décalée. */
+/** @brief Ancien numéro de schéma du blob EEPROM (formats v1 et v2).
+ *  ⚠️ LEGACY depuis v0.11.0 : il n'est plus écrit. Conservé uniquement pour ne
+ *  pas casser les projets qui référencent la macro.
+ *  v1 = 129 o/enregistrement (sans bssid/canal), v2 = 136 o.
+ *  Les deux restent LUS (migration), voir WIFIMANAGER_RECLEN_MARKER. */
 #define WIFIMANAGER_STORAGE_VERSION 2
+
+// --- Format EEPROM auto-descriptif (v0.11.0) --------------------------------
+// Problème résolu : un numéro de version global oblige à écrire une nouvelle
+// branche de migration à CHAQUE ajout de champ, et un oubli fait perdre la
+// configuration réseau du boîtier (constaté en 0.10.3 → 0.10.4).
+//
+// Désormais l'en-tête porte la LARGEUR d'un enregistrement :
+//   [0..3] 'W','M','E','S'   [4] marqueur 'L'   [5] nombre   [6] largeur
+// Le lecteur avance de cette largeur exacte. Les octets qu'il ne connaît pas
+// (champs ajoutés par une version plus récente) sont sautés au lieu de décaler
+// la lecture de tous les réseaux suivants → plus besoin de version, dans les
+// deux sens (firmware ancien lisant un blob récent, et inversement).
+//
+// ⚠️ La largeur inclut les champs connus dans un ORDRE FIGÉ : on ne peut donc
+//    ajouter de nouveaux champs qu'EN FIN d'enregistrement, jamais au milieu.
+#define WIFIMANAGER_RECLEN_MARKER   'L'   ///< octet 4 : format à largeur explicite
+#define WIFIMANAGER_RECORD_LEN      136   ///< 48 ssid + 64 pass + 16 IV + 1 prio + 6 bssid + 1 canal
+#define WIFIMANAGER_RECORD_LEN_V1   129   ///< 48 ssid + 64 pass + 16 IV + 1 prio
+#define WIFIMANAGER_RECORD_LEN_V2   136   ///< identique au format courant
+// Préfixe minimal qu'un lecteur doit savoir interpréter pour reconstruire un
+// réseau utilisable (SSID + mot de passe + IV + priorité).
+#define WIFIMANAGER_RECORD_MIN_LEN  WIFIMANAGER_RECORD_LEN_V1
 
 // ===========================================
 // STRUCTURES DE DONNÉES
@@ -3429,7 +3452,11 @@ bool WiFiManagerESP::saveNetworks() {
     uint8_t buf[WIFIMANAGER_EEPROM_SIZE];
     memset(buf, 0, sizeof(buf));
     buf[0] = 'W'; buf[1] = 'M'; buf[2] = 'E'; buf[3] = 'S';
-    buf[4] = WIFIMANAGER_STORAGE_VERSION;
+    // Format auto-descriptif : marqueur 'L' + largeur d'un enregistrement.
+    // Le lecteur avance de cette largeur, ce qui rend l'ajout de champs
+    // rétro-compatible sans numéro de version à maintenir.
+    buf[4] = (uint8_t)WIFIMANAGER_RECLEN_MARKER;
+    buf[6] = (uint8_t)WIFIMANAGER_RECORD_LEN;
 
     size_t off = 8;
     int stored = 0;
@@ -3451,7 +3478,7 @@ bool WiFiManagerESP::saveNetworks() {
         wm_aes128_cbc_encrypt(rk, iv, ssidBuf, 48, ssidCt);
         wm_aes128_cbc_encrypt(rk, iv, passBuf, 64, passCt);
 
-        if (off + 48 + 64 + 16 + 1 + 7 > sizeof(buf)) {
+        if (off + WIFIMANAGER_RECORD_LEN > sizeof(buf)) {
             Serial.println("[WiFiManagerESP] ⚠️ EEPROM pleine : réseaux tronqués");
             break;
         }
@@ -3478,17 +3505,28 @@ bool WiFiManagerESP::saveNetworks() {
 
 bool WiFiManagerESP::loadNetworks() {
     EEPROM.begin(WIFIMANAGER_EEPROM_SIZE);
-    uint8_t storedVer = EEPROM.read(4);
     bool magicOk = (EEPROM.read(0) == 'W' && EEPROM.read(1) == 'M' &&
                     EEPROM.read(2) == 'E' && EEPROM.read(3) == 'S');
-    // v0.10.4 : on ACCEPTE aussi le format v1 (sans BSSID/canal).
-    // Motif : exiger l'égalité stricte avec WIFIMANAGER_STORAGE_VERSION faisait
-    // ignorer purement et simplement les réseaux enregistrés par une version
-    // antérieure, alors que les bons identifiants étaient déjà en mémoire. Le
-    // boîtier repartait soit sur ceux de connexions.h, soit sur le portail AP
-    // s'il n'en avait pas — donc perte des paramètres déjà connus.
-    bool valid = magicOk && (storedVer == 1 || storedVer == WIFIMANAGER_STORAGE_VERSION);
-    uint8_t count = EEPROM.read(5);
+    uint8_t marker = EEPROM.read(4);
+    uint8_t count  = EEPROM.read(5);
+
+    // Largeur d'un enregistrement, selon le format trouvé :
+    //   'L' : format auto-descriptif (v0.11.0) — la largeur est dans l'en-tête
+    //   1   : ancien format v1 (129 o, sans bssid/canal)
+    //   2   : ancien format v2 (136 o)
+    size_t recLen = 0;
+    if (marker == (uint8_t)WIFIMANAGER_RECLEN_MARKER) {
+        recLen = EEPROM.read(6);
+    } else if (marker == 1) {
+        recLen = WIFIMANAGER_RECORD_LEN_V1;
+    } else if (marker == 2) {
+        recLen = WIFIMANAGER_RECORD_LEN_V2;
+    }
+
+    // Un enregistrement doit au minimum contenir de quoi reconstruire un réseau
+    // (SSID + mot de passe + IV + priorité) et ne pas dépasser l'EEPROM.
+    bool valid = magicOk && recLen >= WIFIMANAGER_RECORD_MIN_LEN &&
+                 recLen <= WIFIMANAGER_EEPROM_SIZE;
 
     if (!valid) {
         EEPROM.end();
@@ -3496,9 +3534,14 @@ bool WiFiManagerESP::loadNetworks() {
         return false;
     }
 
-    if (storedVer != WIFIMANAGER_STORAGE_VERSION) {
-        Serial.printf("[WiFiManagerESP] EEPROM v%u -> migration v%u (relecture du format precedent)\n",
-                      (unsigned)storedVer, (unsigned)WIFIMANAGER_STORAGE_VERSION);
+    // bssid/canal n'existent que si l'enregistrement est assez large : sur un
+    // blob v1 (129 o) les lire décalerait la lecture de TOUS les réseaux
+    // suivants.
+    const bool hasBssidCanal = (recLen >= WIFIMANAGER_RECORD_LEN_V2);
+
+    if (marker != (uint8_t)WIFIMANAGER_RECLEN_MARKER) {
+        Serial.printf("[WiFiManagerESP] EEPROM ancien format (marqueur %u, %u o/enreg.) -> migration\n",
+                      (unsigned)marker, (unsigned)recLen);
     }
 
     uint8_t key[16];
@@ -3511,6 +3554,8 @@ bool WiFiManagerESP::loadNetworks() {
     int maxLoad = (count < WIFIMANAGER_MAX_NETWORKS) ? count : WIFIMANAGER_MAX_NETWORKS;
 
     for (int i = 0; i < maxLoad; i++) {
+        const size_t debut = off;
+        if (debut + recLen > WIFIMANAGER_EEPROM_SIZE) break;   // blob tronqué
         uint8_t ssidCt[48], passCt[64], iv[16];
         for (int k = 0; k < 48; k++) { ssidCt[k] = EEPROM.read((int)(off + k)); }
         off += 48;
@@ -3520,14 +3565,11 @@ bool WiFiManagerESP::loadNetworks() {
         off += 16;
         uint8_t prio = EEPROM.read((int)off);
         off += 1;
-        // v2 : SSID masqué — BSSID (6 o) + canal (1 o)
-        // ⚠️ Ces 7 octets n'existent PAS dans un blob v1 : ne les lire que si
-        //    le format stocké est ≥ 2, sinon on décale la lecture de tous les
-        //    réseaux suivants.
+        // bssid (6 o) + canal (1 o) : présents à partir du format v2.
         uint8_t bssid[6] = {0, 0, 0, 0, 0, 0};
         bool bssidDefini = false;
         int8_t canal = -1;
-        if (storedVer >= 2) {
+        if (hasBssidCanal) {
             for (int k = 0; k < 6; k++) {
                 bssid[k] = EEPROM.read((int)(off + k));
                 if (bssid[k] != 0) bssidDefini = true;
@@ -3536,6 +3578,12 @@ bool WiFiManagerESP::loadNetworks() {
             canal = (int8_t)EEPROM.read((int)off);
             off += 1;
         }
+
+        // ⚠️ Point clé du format auto-descriptif : on repart de `debut` + la
+        //    largeur ANNONCÉE. Les octets qu'on ne connaît pas (champs ajoutés
+        //    par une version plus récente) sont sautés au lieu de décaler la
+        //    lecture de tous les réseaux suivants.
+        off = debut + recLen;
 
         uint8_t ssidBuf[48], passBuf[64];
         wm_aes128_cbc_decrypt(rk, iv, ssidCt, 48, ssidBuf);
@@ -3554,15 +3602,13 @@ bool WiFiManagerESP::loadNetworks() {
     EEPROM.end();
     Serial.printf("[WiFiManagerESP] %d réseau(x) chargé(s) depuis l'EEPROM\n", loaded);
 
-    // Migration terminée : on réécrit au format courant pour que la prochaine
-    // lecture soit directe (et pour que les 7 octets BSSID/canal soient
-    // réellement présents). `saveNetworks()` rouvre l'EEPROM lui-même, d'où le
-    // `end()` ci-dessus. Sans ça, le blob v1 resterait indéfiniment sur le
-    // terrain et serait relu à chaque démarrage.
-    if (loaded > 0 && storedVer != WIFIMANAGER_STORAGE_VERSION) {
+    // Migration terminée : on réécrit au format auto-descriptif pour que la
+    // prochaine lecture soit directe. `saveNetworks()` rouvre l'EEPROM
+    // lui-même, d'où le `end()` ci-dessus.
+    if (loaded > 0 && marker != (uint8_t)WIFIMANAGER_RECLEN_MARKER) {
         if (saveNetworks()) {
-            Serial.printf("[WiFiManagerESP] EEPROM migrée en v%u (%d réseau(x))\n",
-                          (unsigned)WIFIMANAGER_STORAGE_VERSION, loaded);
+            Serial.printf("[WiFiManagerESP] EEPROM migrée au format auto-descriptif (%d réseau(x))\n",
+                          loaded);
         }
     }
     return loaded > 0;
