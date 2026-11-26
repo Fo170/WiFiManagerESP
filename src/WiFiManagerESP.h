@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.11.0 - Multi-Réseaux + mDNS + Classement dynamique
+// v0.12.0 - Multi-Réseaux + mDNS + Classement dynamique
 // ===========================================
 
 
@@ -9,7 +9,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.11.0
+ * @version 0.12.0
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -27,7 +27,7 @@
 
 
 // Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
-#define __WIFIMANAGERESP_H_VERSION__ "0.11.0"
+#define __WIFIMANAGERESP_H_VERSION__ "0.12.0"
 #include <Arduino.h>
 #include <functional>
 #include <EEPROM.h>
@@ -494,6 +494,44 @@ public:
     void setScanGate(bool (*cb)());
 
     // ===========================================
+    // SURVEILLANCE DE VIVACITÉ DU LIEN (v0.12.0)
+    // ===========================================
+
+    /**
+     * @brief Fournit une sonde de vivacité du lien (aller-retour réel).
+     *
+     * Motif : `WiFi.status()` peut rester `WL_CONNECTED` alors que la pile est
+     * figée et que **plus aucun paquet ne passe**. La bibliothèque ne voyait
+     * alors aucune anomalie : pas de perte de lien, donc pas de failover, et le
+     * boîtier restait muet indéfiniment (constaté le 26/11/2026 : 3 h de
+     * silence, aucun crash, aucun portail AP, seul un reset matériel l'a
+     * rétabli).
+     *
+     * La sonde est appelée toutes les `periodMs` tant que le lien se déclare
+     * connecté. Elle doit effectuer un **aller-retour réel** (par exemple une
+     * connexion TCP vers la passerelle) et renvoyer true si le réseau est
+     * utilisable. Après `maxFails` échecs consécutifs, la bibliothèque force
+     * une reconnexion complète (reset de pile + `_startConnection`), ce qui
+     * remet la carte en état sans redémarrage matériel. Un succès remet le
+     * compteur à zéro.
+     *
+     * Sans sonde, aucun test n'est fait (comportement antérieur).
+     *
+     * @param cb  fonction renvoyant true si le lien est réellement utilisable
+     */
+    void setLivenessProbe(bool (*cb)());
+
+    /**
+     * @brief Réglage de la surveillance de vivacité.
+     * @param periodMs période du test (ms, défaut 60000)
+     * @param maxFails nb d'échecs consécutifs avant reconnexion forcée (défaut 3)
+     */
+    void setLivenessParams(uint32_t periodMs, uint8_t maxFails);
+
+    /** @return nb d'échecs consécutifs de la sonde (0 = lien sain). */
+    uint8_t getLivenessFails() const { return _livenessFails; }
+
+    // ===========================================
     // GESTION DES CREDENTIALS (MODE LEGACY)
     // ===========================================
 
@@ -889,6 +927,13 @@ private:
     bool     _scanInhibitFailover = false; ///< Failover inhibé pendant un scan
     bool     _rankEvalPending = false;  ///< Évaluation du classement en attente (scan en cours)
     bool (*_scanGate)() = nullptr;      ///< Autorisation externe du scan (nullptr = toujours ok)
+
+    // --- Surveillance de vivacité (v0.12.0) ---
+    bool (*_livenessCb)() = nullptr;            ///< Sonde d'aller-retour réel (nullptr = inactif)
+    uint32_t _livenessPeriodMs = 60000;         ///< Période du test (ms)
+    uint8_t  _livenessMaxFails = 3;             ///< Échecs consécutifs avant reconnexion forcée
+    uint8_t  _livenessFails = 0;                ///< Échecs consécutifs courants
+    unsigned long _lastLiveness = 0;            ///< Horodatage du dernier test
 
     // ===========================================
     // VARIABLES MEMBRES - IP STATIQUE
@@ -1576,6 +1621,20 @@ int WiFiManagerESP::getNetworkScore(int index) const {
 }
 
 void WiFiManagerESP::setScanGate(bool (*cb)()) { _scanGate = cb; }
+
+void WiFiManagerESP::setLivenessProbe(bool (*cb)()) {
+    _livenessCb = cb;
+    _livenessFails = 0;
+    _lastLiveness = 0;
+    Serial.printf("[WiFiManagerESP] Sonde de vivacite : %s\n", cb ? "activee" : "desactivee");
+}
+
+void WiFiManagerESP::setLivenessParams(uint32_t periodMs, uint8_t maxFails) {
+    _livenessPeriodMs = (periodMs < 5000) ? 5000 : periodMs;   // garde-fou
+    _livenessMaxFails = (maxFails == 0) ? 1 : maxFails;
+    Serial.printf("[WiFiManagerESP] Vivacite : periode %lu ms, %u echec(s) max\n",
+                  (unsigned long)_livenessPeriodMs, _livenessMaxFails);
+}
 
 int WiFiManagerESP::_bestByScore(bool excludeCurrent) {
     int best = -1;
@@ -2349,6 +2408,47 @@ void WiFiManagerESP::update() {
     // Après un échec, repasser en repos pour laisser le failover décider
     if (_connState == ConnectionState::CONN_FAILED) {
         _connState = ConnectionState::CONN_IDLE;
+    }
+
+    // ------------------------------------------------------------------
+    // Surveillance de vivacité du lien (v0.12.0)
+    // ------------------------------------------------------------------
+    // `WiFi.status()` peut rester WL_CONNECTED alors que la pile est figée et
+    // que plus aucun paquet ne passe. Sans ce test, la lib ne voit rien : pas
+    // de perte de lien → pas de failover, et le boîtier reste muet
+    // indéfiniment (3 h constatées le 26/11/2026, aucun crash, seul un reset
+    // matériel l'a rétabli).
+    if (_livenessCb && _connState == ConnectionState::CONN_CONNECTED &&
+        _currentStatus == WL_CONNECTED) {
+        unsigned long now = millis();
+        if (_lastLiveness == 0 || now - _lastLiveness >= _livenessPeriodMs) {
+            _lastLiveness = now;
+            if (_livenessCb()) {
+                if (_livenessFails) {
+                    Serial.printf("[WiFiManagerESP] vivacite retablie (apres %u echec(s))\n",
+                                  _livenessFails);
+                }
+                _livenessFails = 0;
+            } else if (_livenessFails < 255) {
+                _livenessFails++;
+                Serial.printf("[WiFiManagerESP] ⚠️ vivacite KO (%u/%u)\n",
+                              _livenessFails, _livenessMaxFails);
+                if (_livenessFails >= _livenessMaxFails) {
+                    _livenessFails = 0;
+                    int cible = (_currentNetwork >= 0 && _currentNetwork < _networkCount)
+                                ? _currentNetwork : 0;
+                    Serial.println("[WiFiManagerESP] lien muet : reconnexion forcee");
+                    // Repasser en repos, sinon _startConnection() refuse
+                    // (« Connexion déjà en cours »). Il refait au passage un
+                    // _resetWiFi() complet : pile coupée, mode STA, DHCP.
+                    _connState = ConnectionState::CONN_IDLE;
+                    _startConnection(cible, _connectTimeout);
+                }
+            }
+        }
+    } else if (_connState != ConnectionState::CONN_CONNECTED) {
+        // Hors connexion : le compteur ne doit pas survivre à un épisode.
+        _livenessFails = 0;
     }
 
     // ------------------------------------------------------------------
