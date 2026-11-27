@@ -1,6 +1,6 @@
 // ===========================================
 // WiFiManagerESP.h - HEADER FILE
-// v0.12.0 - Multi-Réseaux + mDNS + Classement dynamique
+// v0.12.1 - Multi-Réseaux + mDNS + Classement dynamique
 // ===========================================
 
 
@@ -9,7 +9,7 @@
  * @brief Bibliothèque de gestion WiFi unifiée pour ESP8266 et ESP32
  *        avec support multi-réseaux et basculement automatique
  * @author Fo170
- * @version 0.12.0
+ * @version 0.12.1
  * 
  * Cette bibliothèque fournit une interface simplifiée pour gérer les connexions
  * WiFi sur les plateformes ESP8266 et ESP32, avec :
@@ -27,7 +27,7 @@
 
 
 // Version de la librairie (source UNIQUE — agrégée par liste_lib.h)
-#define __WIFIMANAGERESP_H_VERSION__ "0.12.0"
+#define __WIFIMANAGERESP_H_VERSION__ "0.12.1"
 #include <Arduino.h>
 #include <functional>
 #include <EEPROM.h>
@@ -2435,14 +2435,32 @@ void WiFiManagerESP::update() {
                               _livenessFails, _livenessMaxFails);
                 if (_livenessFails >= _livenessMaxFails) {
                     _livenessFails = 0;
-                    int cible = (_currentNetwork >= 0 && _currentNetwork < _networkCount)
-                                ? _currentNetwork : 0;
-                    Serial.println("[WiFiManagerESP] lien muet : reconnexion forcee");
+                    // ⚠️ Ne PAS retenter le MÊME réseau. Un lien « connecté mais
+                    //    muet » signifie le plus souvent que l'AP associé n'a
+                    //    plus de chemin vers le réseau (uplink d'un répéteur
+                    //    coupé) : le boîtier se reconnecterait indéfiniment au
+                    //    même AP sans jamais retrouver le LAN — c'est ce qui a
+                    //    laissé un ESP8266 injoignable 4 h 21 le 27/11/2026,
+                    //    sans aucun redémarrage (Boots inchangé).
+                    //    On marque donc le réseau courant en échec et on passe
+                    //    au suivant (tourniquet par index).
+                    if (_currentNetwork >= 0 && _currentNetwork < _networkCount) {
+                        _networks[_currentNetwork].failCount = _maxRetries;
+                        _networks[_currentNetwork].lastFail = millis();
+                        _networks[_currentNetwork].linked = false;
+                    }
                     // Repasser en repos, sinon _startConnection() refuse
                     // (« Connexion déjà en cours »). Il refait au passage un
                     // _resetWiFi() complet : pile coupée, mode STA, DHCP.
                     _connState = ConnectionState::CONN_IDLE;
-                    _startConnection(cible, _connectTimeout);
+                    if (_networkCount > 1) {
+                        Serial.println("[WiFiManagerESP] lien muet : bascule vers un autre reseau");
+                        switchToNextNetwork();
+                    } else {
+                        Serial.println("[WiFiManagerESP] lien muet : reconnexion forcee");
+                        int cible = (_currentNetwork >= 0) ? _currentNetwork : 0;
+                        _startConnection(cible, _connectTimeout);
+                    }
                 }
             }
         }
